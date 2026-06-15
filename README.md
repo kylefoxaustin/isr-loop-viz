@@ -13,7 +13,7 @@ Built to make one point land for a non-specialist: *the interrupt period isn't a
 - **Pipeline band** — the five stages with live readouts: the analog source, the ADC strobe, the core's binary word, the PWM duty, and the GaN stage feeding a little battery that **heats up and changes color** (green→amber→red, with a temperature) as the loop rate punishes it. Bit packets flow ADC → core → PWM at the real tick rate.
 - **Oscilloscope** — the true analog voltage (cyan), the ADC sample-and-hold staircase + strobe lines (amber), and the delivered rail. The rail is a **bold smooth line inside a translucent switching-ripple band**, and both are colored by *freshness*: **green** where a fresh ISR update just landed, **red** where the rail is coasting on held/stale data. Tracking error is shaded faint red.
 - **PWM drive** — the gate waveform. Two carrier modes: **Per-ISR** (one PWM period per interrupt) or a fixed **1 MHz** carrier where periods that merely replay the held command are drawn **red** and the one fresh period after each ISR update stays **green** — so you can literally count how much of the output is stale.
-- **Metrics + verdict** — loop rate, `T_isr / τ_load` ratio, samples per signal cycle, ADC LSB (quantization step), output ripple, tracking RMS error, control bandwidth, **ripple current** into the pack, **battery aging rate**, and a plain-English verdict.
+- **Metrics + verdict** — loop rate, `T_isr / τ_load` ratio, samples per signal cycle, ADC LSB (quantization step), output ripple, tracking RMS error, control bandwidth, **ripple current** into the pack, **battery aging rate**, **cumulative wasted heat**, and a plain-English verdict.
 - **Battery + safety band** — the scope draws the safe operating-voltage window (`SAFE MAX` / `SAFE MIN`); when a strobed loop's ripple punches past it, the line flashes red and the overshoot is shaded — **⚠ OVERVOLTAGE — ripple cooks the pack**. See ["What the loop rate does to the battery"](#what-the-loop-rate-does-to-the-battery) below.
 - **Disturbance verdict** — hit **⚡ Inject disturbance** and the scope marks the glitch, shades the **blind window** (glitch → next ADC sample), and renders a **CAUGHT / PARTIAL / MISSED** verdict with the % of the spike that survived to the first sample. At 1 µs the loop catches ~99 %; at 20 µs it's usually blind long enough that most of the spike has decayed unseen.
 
@@ -58,6 +58,8 @@ So at the same average power:
 | 1 µs  | ~0.1 A | ~25 °C ❄ | 1× |
 
 A slow loop doesn't just track poorly — it **cooks the battery and overshoots the safe-voltage window**. A fast loop keeps the pack cool, efficient, and inside its limits. That's the "switch faster, close the loop cycle-by-cycle" argument extended all the way to pack life. (Battery constants — ESR, thermal resistance, safe window — are teaching values in `cfg`.)
+
+The cell has **thermal mass**: temperature eases toward its steady-state target on a time constant (~4 s in the model), so it *heats up* gradually at 20 µs and *cools back down* gradually when you drop to 1 µs — the ripple current changes instantly, the temperature lags. A **cumulative wasted-heat counter** (`WASTED HEAT`, in J/kJ) tallies the I²·ESR energy dumped into the pack; it races up at 20 µs and all but freezes at 1 µs, so running hot for a while then going fast shows exactly how much energy the slow loop already threw away.
 
 ## Recording a GIF for slides
 

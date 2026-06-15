@@ -30,10 +30,13 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
 4. **Metrics** (`drawMeta`) — 9 chips (incl. **ADC LSB** = quantization step via
    `adcLsbStr`, the only place ADC bit depth is actually legible — see note below;
    plus **RIPPLE I** and **BATT AGING**) + verdict banner + slow-mo factor.
-- **Battery effect** (`ripCurrent`/`battLossW`/`battDT`/`battTemp`/`battAging`): the
-   GaN-stage glyph heats green→amber→red with a temperature + COOL/WARM/HOT status;
+- **Battery effect** (`ripCurrent`/`battLossW`/`battTargetC`/`battDT`/`battTemp`/`battAging`):
+   the GaN-stage glyph heats green→amber→red with a temperature + COOL/WARM/HOT status;
    `drawSafety` draws the safe-voltage window (`cfg.vMax`/`vMin`) and shades + flashes
-   ripple overshoots beyond it ("⚠ OVERVOLTAGE — ripple cooks the pack").
+   ripple overshoots beyond it ("⚠ OVERVOLTAGE — ripple cooks the pack"). **Thermal mass:**
+   `state.battTempC` integrates toward `battTargetC()` on `cfg.battTauReal` (~4 real s) in
+   the `tick()` loop, so it heats/cools with lag (ripple current is instant, temp lags).
+   `state.wastedJ` accumulates `battLossW()·dt` → the `WASTED HEAT` chip (`wastedStr`).
 
 ### Simulation model (the honest part)
 

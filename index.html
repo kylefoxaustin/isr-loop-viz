@@ -196,6 +196,7 @@ const cfg = {
   zRipple: 1.4,         // effective ripple impedance rail → pack, Ω
   rTh: 10,              // thermal resistance, °C/W (heat rise per watt of loss)
   ambient: 25,          // ambient temperature, °C
+  battTauReal: 4,       // thermal time constant, real seconds (heat-up / cool-down lag)
   vMax: 36, vMin: 12    // safe operating-voltage window (rails outside = stress)
 };
 
@@ -204,6 +205,8 @@ const state = {
   pwmMode: 'isr',            // 'isr' = one PWM period per interrupt; 'fixed' = 1 MHz carrier
   overrun: false,            // model ISR execution time → missed deadlines
   missTicks: new Set(),      // ISR tick times whose deadline was blown
+  battTempC: cfg.ambient,    // dynamic cell temperature (has thermal mass → lags)
+  wastedJ: 0,                // cumulative heat dumped into the pack, joules
   vtime: 0,
   nextTick: 0,
   sampleLatch: cfg.center,   // most recent ADC sample (held)
@@ -795,11 +798,18 @@ function adcLsbStr(){
 // ripple voltage (∝ (T_isr/τ)²) drives a ripple current through the pack, which
 // burns I²·ESR as heat inside the cell → temperature rise → faster aging.
 // Same average power, wildly different battery outcome at 20µs vs 1µs.
-function ripCurrent(){ return rippleVpp()/cfg.zRipple; }            // A (ripple into pack)
-function battLossW(){ const i=ripCurrent(); return i*i*cfg.esr; }   // W of heat in the cell
-function battDT(){ return battLossW()*cfg.rTh; }                    // steady-state °C rise
-function battTemp(){ return cfg.ambient + battDT(); }              // cell temperature, °C
+function ripCurrent(){ return rippleVpp()/cfg.zRipple; }            // A (ripple into pack), instant
+function battLossW(){ const i=ripCurrent(); return i*i*cfg.esr; }   // W of heat in the cell, instant
+function battTargetC(){ return cfg.ambient + battLossW()*cfg.rTh; } // steady-state temp it heads toward
+function battDT(){ return state.battTempC - cfg.ambient; }         // ACTUAL rise (has thermal lag)
+function battTemp(){ return state.battTempC; }                     // ACTUAL cell temperature, °C
 function battAging(){ return Math.pow(2, battDT()/10); }          // ×faster wear (~2× per 10°C)
+function wastedStr(){
+  const j=state.wastedJ;
+  if(j>=1000) return (j/1000).toFixed(2)+' kJ';
+  if(j>=1)    return j.toFixed(1)+' J';
+  return (j*1000).toFixed(0)+' mJ';
+}
 
 function drawMeta(){
   const v=verdict();
@@ -813,7 +823,8 @@ function drawMeta(){
     ['TRACKING RMS', rmsError().toFixed(2)+' V', rmsError()<0.8?COL.green:rmsError()<2?COL.amber:COL.red],
     ['CONTROL BW', ((fsw/10)>=1000?(fsw/10000).toFixed(2)+' MHz':(fsw/10).toFixed(0)+' kHz'), COL.cyan],
     ['RIPPLE I', ripCurrent().toFixed(1)+' A', ripCurrent()<1?COL.green:ripCurrent()<4?COL.amber:COL.red],
-    ['BATT AGING', battAging().toFixed(battAging()<10?1:0)+'×', battDT()<5?COL.green:battDT()<20?COL.amber:COL.red]
+    ['BATT AGING', battAging().toFixed(battAging()<10?1:0)+'×', battDT()<5?COL.green:battDT()<20?COL.amber:COL.red],
+    ['WASTED HEAT', wastedStr(), battLossW()<0.1?COL.green:battLossW()<1?COL.amber:COL.red]
   ];
   const n=chips.length, gap=12, cw=(W-24-gap*(n-1))/n, x0=12;
   for(let i=0;i<n;i++){
@@ -848,7 +859,14 @@ function frame(now){
 let last=performance.now();
 function tick(now){
   const dtMs=Math.min(60, now-last); last=now;
-  if(state.playing){ advance(state.speed * dtMs/1000); }
+  if(state.playing){
+    advance(state.speed * dtMs/1000);
+    // battery thermal mass: temperature eases toward the steady-state target on a
+    // real-time constant, and wasted heat (I²·ESR) piles up while it runs.
+    const dtsec=dtMs/1000;
+    state.battTempC += (battTargetC()-state.battTempC)*(1-Math.exp(-dtsec/cfg.battTauReal));
+    state.wastedJ += battLossW()*dtsec;
+  }
   frame(now);
   requestAnimationFrame(tick);
 }
