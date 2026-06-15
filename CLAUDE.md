@@ -27,7 +27,9 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
 3. **PWM strip** (`drawPWM`) — gate waveform. Two carrier modes (`state.pwmMode`):
    `'isr'` = one period per interrupt (all green); `'fixed'` = 1 MHz carrier where
    replayed/stale periods are red and the fresh period after each ISR tick is green.
-4. **Metrics** (`drawMeta`) — chips + verdict banner + slow-mo factor.
+4. **Metrics** (`drawMeta`) — 7 chips (incl. **ADC LSB** = quantization step via
+   `adcLsbStr`, the only place ADC bit depth is actually legible — see note below)
+   + verdict banner + slow-mo factor.
 
 ### Simulation model (the honest part)
 
@@ -89,6 +91,13 @@ PY
 the `"__GIF_WORKER_B64__"` token first, or replace the existing base64 string.)
 
 ## Gotchas / things already fixed
+
+- **ADC bit depth is sub-pixel on the waveform — by design, don't "fix" it.** One LSB
+  on the 48V range over the 250px scope (~5.2 px/V): 8-bit ≈ 1.0px, 12-bit ≈ 0.06px,
+  18-bit ≈ 0.001px. So changing bits does NOT visibly move the staircase/rail — the
+  visible steps are *temporal* (sample-and-hold), not amplitude quantization. The
+  `bits` knob is surfaced honestly through the **ADC LSB** metric chip + the binary
+  word/packet-hex width, not through the curves.
 
 - **Packet smear at fast ticks** — at 1–2µs many packets are in flight; drawing a
   hex label per packet turned into an unreadable smear. Fixed: flowing dots for all

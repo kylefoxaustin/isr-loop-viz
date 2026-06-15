@@ -735,6 +735,12 @@ function rmsError(){
   for(const h of state.voutHist){ const e=vsig(h.t)-h.v; acc+=e*e; n++; }
   return Math.sqrt(acc/n);
 }
+function adcLsbStr(){
+  const mv = (cfg.vmax-cfg.vmin)/((1<<state.bits)-1)*1000;   // one LSB, in mV
+  if(mv>=100) return Math.round(mv)+' mV';
+  if(mv>=1)   return mv.toFixed(mv>=10?1:2)+' mV';
+  return Math.round(mv*1000)+' µV';
+}
 function drawMeta(){
   const v=verdict();
   const fsw=1000/state.isrUs;
@@ -742,6 +748,7 @@ function drawMeta(){
     ['LOOP RATE', (fsw>=1000?(fsw/1000).toFixed(2)+' MHz':fsw.toFixed(0)+' kHz'), COL.cyan],
     ['T_isr / τ_load', ratio().toFixed(2)+'×', ratio()<=0.45?COL.green:ratio()<=1.5?COL.amber:COL.red],
     ['SAMPLES / CYCLE', (cfg.Tsig/state.isrUs).toFixed(1), COL.cyan],
+    ['ADC LSB', adcLsbStr(), state.bits>=18?COL.green:state.bits>=12?COL.cyan:COL.amber],
     ['OUTPUT RIPPLE', rippleVpp().toFixed(2)+' Vpp', rippleVpp()<0.6?COL.green:COL.red],
     ['TRACKING RMS', rmsError().toFixed(2)+' V', rmsError()<0.8?COL.green:rmsError()<2?COL.amber:COL.red],
     ['CONTROL BW', ((fsw/10)>=1000?(fsw/10000).toFixed(2)+' MHz':(fsw/10).toFixed(0)+' kHz'), COL.cyan]
