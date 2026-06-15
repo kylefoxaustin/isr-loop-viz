@@ -27,9 +27,13 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
 3. **PWM strip** (`drawPWM`) — gate waveform. Two carrier modes (`state.pwmMode`):
    `'isr'` = one period per interrupt (all green); `'fixed'` = 1 MHz carrier where
    replayed/stale periods are red and the fresh period after each ISR tick is green.
-4. **Metrics** (`drawMeta`) — 7 chips (incl. **ADC LSB** = quantization step via
-   `adcLsbStr`, the only place ADC bit depth is actually legible — see note below)
-   + verdict banner + slow-mo factor.
+4. **Metrics** (`drawMeta`) — 9 chips (incl. **ADC LSB** = quantization step via
+   `adcLsbStr`, the only place ADC bit depth is actually legible — see note below;
+   plus **RIPPLE I** and **BATT AGING**) + verdict banner + slow-mo factor.
+- **Battery effect** (`ripCurrent`/`battLossW`/`battDT`/`battTemp`/`battAging`): the
+   GaN-stage glyph heats green→amber→red with a temperature + COOL/WARM/HOT status;
+   `drawSafety` draws the safe-voltage window (`cfg.vMax`/`vMin`) and shades + flashes
+   ripple overshoots beyond it ("⚠ OVERVOLTAGE — ripple cooks the pack").
 
 ### Simulation model (the honest part)
 
@@ -155,6 +159,9 @@ casual, technical, direct. No corporate hedging, no marketing voice.
   blip even at 1µs (sample latency + transport delay), phase-dependent.
 - **ISR overrun mode** — models ISR compute time → dropped updates on blown deadlines,
   drawn hatched magenta (distinct from stale-red). Fast loops have no margin.
+- **Battery effect of loop rate** — ripple → ripple current → I²·ESR heat → cell temp
+  → aging (`(T_isr/τ)⁴` heating). Battery glyph heats green→red; new RIPPLE I + BATT
+  AGING chips; `drawSafety` safe-V window flashes on ripple overshoot. Constants in `cfg`.
 - Validated all of the above headlessly (Chrome `--virtual-time-budget`; glitch
   injected via a temp `setTimeout` in throwaway copies since `state` is closure-scoped).
 

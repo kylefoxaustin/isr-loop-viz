@@ -190,7 +190,13 @@ const cfg = {
   // ISR execution-time model (only used when overrun mode is on):
   isrBaseUs: 0.72,      // nominal ISR compute time
   isrJitterUs: 0.32,    // typical run-to-run jitter
-  isrGlitchCostUs: 1.8  // extra compute while handling a fresh disturbance
+  isrGlitchCostUs: 1.8, // extra compute while handling a fresh disturbance
+  // battery / power-stage model (teaching values, not a datasheet):
+  esr: 0.05,            // pack internal resistance, Ω
+  zRipple: 1.4,         // effective ripple impedance rail → pack, Ω
+  rTh: 10,              // thermal resistance, °C/W (heat rise per watt of loss)
+  ambient: 25,          // ambient temperature, °C
+  vMax: 36, vMin: 12    // safe operating-voltage window (rails outside = stress)
 };
 
 const state = {
@@ -424,11 +430,23 @@ function drawStageGlyph(k,cx,cy,bw,hot){
       const hi=per*duty; X.moveTo(x,6); X.lineTo(x,-10); X.lineTo(x+hi,-10);
       X.lineTo(x+hi,6); X.lineTo(x+per,6); x+=per;} X.stroke();
   } else if(k==='gan'){
-    // little battery filling toward vout
+    // little battery filling toward vout, tinted + heated by the loop-rate ripple
     const lvl=(state.vout-cfg.vmin)/(cfg.vmax-cfg.vmin);
-    X.strokeStyle=COL.green; X.lineWidth=2; X.strokeRect(-22,-12,44,24);
-    X.fillStyle=COL.green; X.fillRect(22,-5,3,10);
-    X.fillStyle='rgba(70,224,138,0.5)'; X.fillRect(-20,-10,40*lvl,20);
+    const dt=battDT(), temp=battTemp();
+    const bc = dt<5?COL.green : dt<20?COL.amber : COL.red;
+    // heat shimmer above the cell when it's warming up
+    if(dt>6){ X.strokeStyle=bc; X.globalAlpha=Math.min(0.6,dt/55); X.lineWidth=1.2;
+      for(let i=-1;i<=1;i++){ const bx=i*9; X.beginPath(); X.moveTo(bx,-14);
+        X.quadraticCurveTo(bx+4,-19,bx,-23); X.quadraticCurveTo(bx-4,-27,bx,-31); X.stroke(); }
+      X.globalAlpha=1; }
+    X.strokeStyle=bc; X.lineWidth=2; X.strokeRect(-22,-12,44,24);
+    X.fillStyle=bc; X.fillRect(22,-5,3,10);
+    X.globalAlpha=0.5; X.fillStyle=bc; X.fillRect(-20,-10,40*lvl,20); X.globalAlpha=1;
+    // temperature + status
+    X.fillStyle=bc; X.font='700 10px '+FONT; X.textAlign='center';
+    X.fillText(Math.round(temp)+'°C', 0, 25);
+    X.font='8px '+FONT;
+    X.fillText(dt<5?'COOL':dt<20?'WARM':'🔥 HOT', 0, 36);
   }
   X.restore();
 }
@@ -552,6 +570,9 @@ function drawScope(){
     X.restore();
   }
 
+  // safe operating-voltage window + ripple-overshoot highlight
+  drawSafety();
+
   // ISR deadline-overrun marks (top ribbon hatch + dashed line per blown period)
   drawOverruns();
 
@@ -565,6 +586,35 @@ function drawScope(){
   // y labels
   X.fillStyle=COL.dim; X.font='10px '+FONT; X.textAlign='right';
   [0,12,24,36,48].forEach(v=>{ X.fillText(v+'V', SCOPE.x-6, vToY(v)+3); });
+}
+
+// ----- safe operating-voltage window: ripple punching past the limits = stress -----
+function drawSafety(){
+  const yMax=vToY(cfg.vMax), yMin=vToY(cfg.vMin);
+  let over=false, under=false;
+  for(const h of state.voutHist){ if(h.v+h.rip>cfg.vMax)over=true; if(h.v-h.rip<cfg.vMin)under=true; }
+  // shade the ripple-band excursions beyond the limits
+  X.save(); X.beginPath(); X.rect(SCOPE.x,SCOPE.y,SCOPE.w,SCOPE.h); X.clip();
+  X.fillStyle='rgba(255,93,108,0.5)';
+  for(let i=1;i<state.voutHist.length;i++){
+    const h=state.voutHist[i], x=tToX(h.t); if(x<SCOPE.x) continue;
+    const px=tToX(state.voutHist[i-1].t), w=Math.max(1,x-px);
+    if(h.v+h.rip>cfg.vMax){ const yt=vToY(h.v+h.rip); X.fillRect(px,yt,w,yMax-yt); }
+    if(h.v-h.rip<cfg.vMin){ const yb=vToY(h.v-h.rip); X.fillRect(px,yMin,w,yb-yMin); }
+  }
+  X.restore();
+  // dashed limit lines (bright when currently violated)
+  X.setLineDash([6,4]); X.lineWidth=1.4;
+  X.strokeStyle = over?COL.red:'rgba(255,93,108,0.38)';
+  X.beginPath(); X.moveTo(SCOPE.x,yMax); X.lineTo(SCOPE.x+SCOPE.w,yMax); X.stroke();
+  X.strokeStyle = under?COL.red:'rgba(255,93,108,0.38)';
+  X.beginPath(); X.moveTo(SCOPE.x,yMin); X.lineTo(SCOPE.x+SCOPE.w,yMin); X.stroke();
+  X.setLineDash([]);
+  X.font='9px '+FONT; X.textAlign='left';
+  X.fillStyle = over?COL.red:'rgba(255,93,108,0.6)';
+  X.fillText('SAFE MAX '+cfg.vMax+'V'+(over?'   ⚠ OVERVOLTAGE — ripple cooks the pack':''), SCOPE.x+5, yMax-4);
+  X.fillStyle = under?COL.red:'rgba(255,93,108,0.6)';
+  X.fillText('SAFE MIN '+cfg.vMin+'V'+(under?'   ⚠ UNDERVOLTAGE':''), SCOPE.x+5, yMin+11);
 }
 
 // ----- ISR deadline-overrun marks on the scope -----
@@ -741,6 +791,16 @@ function adcLsbStr(){
   if(mv>=1)   return mv.toFixed(mv>=10?1:2)+' mV';
   return Math.round(mv*1000)+' µV';
 }
+// ---- battery effect of the loop rate ----
+// ripple voltage (∝ (T_isr/τ)²) drives a ripple current through the pack, which
+// burns I²·ESR as heat inside the cell → temperature rise → faster aging.
+// Same average power, wildly different battery outcome at 20µs vs 1µs.
+function ripCurrent(){ return rippleVpp()/cfg.zRipple; }            // A (ripple into pack)
+function battLossW(){ const i=ripCurrent(); return i*i*cfg.esr; }   // W of heat in the cell
+function battDT(){ return battLossW()*cfg.rTh; }                    // steady-state °C rise
+function battTemp(){ return cfg.ambient + battDT(); }              // cell temperature, °C
+function battAging(){ return Math.pow(2, battDT()/10); }          // ×faster wear (~2× per 10°C)
+
 function drawMeta(){
   const v=verdict();
   const fsw=1000/state.isrUs;
@@ -751,7 +811,9 @@ function drawMeta(){
     ['ADC LSB', adcLsbStr(), state.bits>=18?COL.green:state.bits>=12?COL.cyan:COL.amber],
     ['OUTPUT RIPPLE', rippleVpp().toFixed(2)+' Vpp', rippleVpp()<0.6?COL.green:COL.red],
     ['TRACKING RMS', rmsError().toFixed(2)+' V', rmsError()<0.8?COL.green:rmsError()<2?COL.amber:COL.red],
-    ['CONTROL BW', ((fsw/10)>=1000?(fsw/10000).toFixed(2)+' MHz':(fsw/10).toFixed(0)+' kHz'), COL.cyan]
+    ['CONTROL BW', ((fsw/10)>=1000?(fsw/10000).toFixed(2)+' MHz':(fsw/10).toFixed(0)+' kHz'), COL.cyan],
+    ['RIPPLE I', ripCurrent().toFixed(1)+' A', ripCurrent()<1?COL.green:ripCurrent()<4?COL.amber:COL.red],
+    ['BATT AGING', battAging().toFixed(battAging()<10?1:0)+'×', battDT()<5?COL.green:battDT()<20?COL.amber:COL.red]
   ];
   const n=chips.length, gap=12, cw=(W-24-gap*(n-1))/n, x0=12;
   for(let i=0;i<n;i++){
