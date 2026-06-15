@@ -50,6 +50,13 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
   when `(t mod isrUs) < Tcarrier`, where `Tcarrier = 1µs` in fixed mode else `isrUs`.
   Fresh → green, stale → red. So per-ISR mode is all-green; fixed-1MHz at 20µs is
   ~95% red.
+- **Overrun** (`state.overrun`, `isrCost`/`isrOverran`, `drawOverruns`): models ISR
+  execution time = `cfg.isrBaseUs + jitter + glitch surcharge`. If it exceeds `T_isr`
+  the tick's deadline is **blown** — in `advance()` the update is dropped (no sample
+  latched, command holds) and `tk` is added to `state.missTicks`. Drawn distinctly
+  from stale-red: **hatched magenta** PWM period + dashed ghost gate, plus a top-ribbon
+  hatch on the scope. This is a *scheduling* failure (compute > period), NOT staleness.
+  Margin shrinks with `T_isr`: 1µs blows ~10% idle / ~30% during a glitch; ≥5µs never.
 - **Disturbance verdict** (`drawGlitch`): on a kick, the next ADC sample is
   `ts = ceil(kickT/isrUs)*isrUs`; `blind = ts-kickT` and `captured = exp(-blind/9)`
   (9µs = the disturbance decay τ in `vsig`). ≥0.6 CAUGHT (green), ≥0.3 PARTIAL
@@ -135,6 +142,10 @@ casual, technical, direct. No corporate hedging, no marketing voice.
   (killed the 20µs zigzag); rail + band colored by **freshness** (green/red).
 - Folded freshness into the kick: **blind window + CAUGHT/PARTIAL/MISSED** verdict
   (`drawGlitch`).
+- Glitch-aware staleness via a shared `isStale()` — a kick paints a 1-2 period red
+  blip even at 1µs (sample latency + transport delay), phase-dependent.
+- **ISR overrun mode** — models ISR compute time → dropped updates on blown deadlines,
+  drawn hatched magenta (distinct from stale-red). Fast loops have no margin.
 - Validated all of the above headlessly (Chrome `--virtual-time-budget`; glitch
   injected via a temp `setTimeout` in throwaway copies since `state` is closure-scoped).
 

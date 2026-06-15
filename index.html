@@ -117,6 +117,14 @@
       </div>
 
       <div class="ctl">
+        <label for="overrun">ISR overrun</label>
+        <div class="seg" id="overrun" role="group" aria-label="ISR deadline overrun">
+          <button data-ovr="off" aria-pressed="true">Off</button>
+          <button data-ovr="on"  aria-pressed="false">On</button>
+        </div>
+      </div>
+
+      <div class="ctl">
         <label for="speed">Slow-mo</label>
         <div class="seg" id="speed" role="group" aria-label="Simulation speed">
           <button data-speed="7"  aria-pressed="false">0.5×</button>
@@ -138,6 +146,7 @@
       <span><i style="background:var(--green)"></i>Rail — fresh data</span>
       <span><i style="background:var(--red)"></i>Rail — stale / held</span>
       <span><i style="background:rgba(255,93,108,.22);height:9px;border-radius:2px"></i>± switching ripple (band)</span>
+      <span><i style="background:#c77dff"></i>ISR deadline blown (missed push)</span>
       <span><i style="background:var(--red);opacity:.3"></i>Tracking error</span>
     </div>
     <div class="status" id="status">Ready.</div>
@@ -177,12 +186,18 @@ const cfg = {
   Tsig: 64,          // analog signal period (us)
   vmin: 0, vmax: 48, // ADC range / rail volts
   center: 24, amp: 9,
-  tauLoad: 3.0       // load (LC + battery) time constant, us — FIXED, it's physical
+  tauLoad: 3.0,      // load (LC + battery) time constant, us — FIXED, it's physical
+  // ISR execution-time model (only used when overrun mode is on):
+  isrBaseUs: 0.72,      // nominal ISR compute time
+  isrJitterUs: 0.32,    // typical run-to-run jitter
+  isrGlitchCostUs: 1.8  // extra compute while handling a fresh disturbance
 };
 
 const state = {
   isrUs: 5, bits: 12, speed: 14, playing: true,
   pwmMode: 'isr',            // 'isr' = one PWM period per interrupt; 'fixed' = 1 MHz carrier
+  overrun: false,            // model ISR execution time → missed deadlines
+  missTicks: new Set(),      // ISR tick times whose deadline was blown
   vtime: 0,
   nextTick: 0,
   sampleLatch: cfg.center,   // most recent ADC sample (held)
@@ -237,6 +252,29 @@ function glitchBlind(t){
 }
 function isStale(t){ return !carrierFresh(t) || glitchBlind(t); }
 
+// ---- ISR execution-time model → deadline overruns ----
+// A blown deadline is a *scheduling* failure (compute > period), distinct from
+// stale data: the ISR doesn't finish in its slot, so the due update is dropped,
+// the PWM holds, and the period is drawn hatched magenta ("deadline blown").
+// Fast loops have little margin (1µs blows occasionally even idle, and badly
+// during a glitch); slow loops have plenty (20µs never overruns).
+function jit(k){ const x=Math.sin(k*12.9898)*43758.5453; return x-Math.floor(x); } // deterministic 0..1
+function isrCost(tk){
+  let c = cfg.isrBaseUs + jit(Math.round(tk/state.isrUs))*cfg.isrJitterUs;
+  if(state.kickAmp && tk>=state.kickT)      // disturbance handling costs extra cycles
+    c += Math.min(1, Math.abs(state.kickAmp)*Math.exp(-(tk-state.kickT)/9)/14)*cfg.isrGlitchCostUs;
+  return c;
+}
+function isrOverran(tk){ return state.overrun && isrCost(tk) > state.isrUs; }
+function missedAt(t){ return state.missTicks.has(Math.floor((t+1e-6)/state.isrUs)*state.isrUs); }
+function hatch(x,y,w,h,color){
+  if(w<=0) return;
+  X.save(); X.beginPath(); X.rect(x,y,w,h); X.clip();
+  X.strokeStyle=color; X.lineWidth=1; X.globalAlpha=0.55;
+  for(let i=-h;i<w;i+=6){ X.beginPath(); X.moveTo(x+i,y+h); X.lineTo(x+i+h,y); X.stroke(); }
+  X.restore();
+}
+
 // ---- simulation step ----
 function advance(dtv){
   // dtv: virtual microseconds to advance
@@ -249,13 +287,19 @@ function advance(dtv){
     // fire any ISR ticks crossed in [t0,t1)
     while(state.nextTick < t1){
       const tk = state.nextTick;
-      const s = quant(vsig(tk));
-      state.sampleLatch = s.v;
-      state.sampleHist.push({t:tk, v:s.v, code:s.code});
-      // transport delay: apply LAST period's sample now, queue this one
-      state.uApplied = state.uPending;
-      state.uPending = s.v;
-      spawnPacket(s);
+      if(isrOverran(tk)){
+        // deadline blown: ISR didn't finish in its slot — the update is dropped,
+        // no new sample latched, the command (and PWM) holds the last value.
+        state.missTicks.add(tk);
+      } else {
+        const s = quant(vsig(tk));
+        state.sampleLatch = s.v;
+        state.sampleHist.push({t:tk, v:s.v, code:s.code});
+        // transport delay: apply LAST period's sample now, queue this one
+        state.uApplied = state.uPending;
+        state.uPending = s.v;
+        spawnPacket(s);
+      }
       state.nextTick += state.isrUs;
     }
     // integrate averaged output toward applied command
@@ -271,6 +315,7 @@ function advance(dtv){
   const cut = state.vtime - cfg.windowUs - 4;
   while(state.sampleHist.length && state.sampleHist[0].t < cut) state.sampleHist.shift();
   while(state.voutHist.length && state.voutHist[0].t < cut) state.voutHist.shift();
+  for(const tk of state.missTicks) if(tk < cut) state.missTicks.delete(tk);
 }
 function triangle(x){ const f = x - Math.floor(x); return (f<0.5? f*2 : 2-f*2)*2-1; }
 
@@ -507,6 +552,9 @@ function drawScope(){
     X.restore();
   }
 
+  // ISR deadline-overrun marks (top ribbon hatch + dashed line per blown period)
+  drawOverruns();
+
   // glitch / disturbance overlay — folds the freshness story into the kick
   drawGlitch();
 
@@ -517,6 +565,28 @@ function drawScope(){
   // y labels
   X.fillStyle=COL.dim; X.font='10px '+FONT; X.textAlign='right';
   [0,12,24,36,48].forEach(v=>{ X.fillText(v+'V', SCOPE.x-6, vToY(v)+3); });
+}
+
+// ----- ISR deadline-overrun marks on the scope -----
+function drawOverruns(){
+  if(!state.overrun || !state.missTicks.size) return;
+  X.save(); X.beginPath(); X.rect(SCOPE.x,SCOPE.y,SCOPE.w,SCOPE.h); X.clip();
+  let labeled=false;
+  for(const tk of state.missTicks){
+    const xs=tToX(tk), xe=tToX(tk+state.isrUs);
+    if(xe<SCOPE.x || xs>SCOPE.x+SCOPE.w) continue;
+    const cx=Math.max(SCOPE.x,xs);
+    hatch(cx, SCOPE.y, Math.min(SCOPE.x+SCOPE.w,xe)-cx, 16, '#c77dff');
+    X.strokeStyle='rgba(199,125,255,0.45)'; X.setLineDash([3,3]); X.lineWidth=1;
+    X.beginPath(); X.moveTo(xs,SCOPE.y); X.lineTo(xs,SCOPE.y+SCOPE.h); X.stroke();
+    X.setLineDash([]);
+    if(!labeled){
+      X.fillStyle='#c77dff'; X.font='700 9px '+FONT; X.textAlign='left';
+      X.fillText('⊘ DEADLINE BLOWN', cx+3, SCOPE.y+27);
+      labeled=true;
+    }
+  }
+  X.restore();
 }
 
 // ----- glitch overlay: how badly does the loop catch a disturbance? -----
@@ -593,12 +663,26 @@ function drawPWM(){
     const m=Math.floor((pStart+1e-6)/state.isrUs);
     const samp=nearestSample((m-1)*state.isrUs);
     const duty=samp==null?0.5:(samp.v-cfg.vmin)/(cfg.vmax-cfg.vmin);
+    // blown = the ISR missed its deadline for this period (scheduling failure).
     // fresh = a new ISR computation landed this carrier AND it isn't inside the
     // glitch blind window. Structural staleness only bites in fixed mode; the
     // glitch blind window is what turns a 1µs carrier red right after a kick.
-    const fresh = !isStale(pStart);
+    const blown = missedAt(pStart);
+    const fresh = !blown && !isStale(pStart);
     const xs=tToXp(pStart), xe=tToXp(pEnd), xhi=tToXp(pStart+clamp01(duty)*Tpwm);
     shown++; if(!fresh) stale++;
+    if(blown){
+      // deadline blown: the PWM hardware holds the last duty, but flag it as a
+      // missed push (magenta hatch + dashed ghost gate) — NOT just stale data.
+      X.fillStyle='rgba(199,125,255,0.16)'; X.fillRect(xs,PWM.y,Math.max(1,xe-xs),PWM.h);
+      hatch(xs,PWM.y,Math.max(1,xe-xs),PWM.h,'#c77dff');
+      X.strokeStyle='#c77dff'; X.lineWidth=1.6; X.setLineDash([3,3]);
+      X.beginPath();
+      X.moveTo(xs,baseY); X.lineTo(xs,topY); X.lineTo(xhi,topY);
+      X.lineTo(xhi,baseY); X.lineTo(xe,baseY); X.stroke();
+      X.setLineDash([]);
+      continue;
+    }
     // background band: red = time spent on stale / replayed / glitch-blind data
     if(fixed || !fresh){
       X.fillStyle = fresh ? 'rgba(70,224,138,0.10)' : 'rgba(255,93,108,0.13)';
@@ -629,6 +713,12 @@ function drawPWM(){
     X.fillStyle=COL.dim;
     X.fillText('f_sw = '+(fsw>=1000?(fsw/1000).toFixed(2)+' MHz':fsw.toFixed(0)+' kHz')
       +'   (one PWM period per interrupt)', PWM.x+6, PWM.y+PWM.h+18);
+  }
+  if(state.overrun){
+    const n=state.missTicks.size;
+    X.textAlign='right'; X.fillStyle = n ? '#c77dff' : COL.dim;
+    X.fillText('ISR overrun ON · '+n+' missed deadline'+(n===1?'':'s')+' in view',
+      PWM.x+PWM.w-6, PWM.y+PWM.h+18);
   }
 }
 function nearestSample(t){
@@ -708,10 +798,12 @@ function seg(id, attr, cast, apply){
   });
 }
 seg('isr','isr',Number,v=>{ state.isrUs=v;
-  state.nextTick=Math.ceil(state.vtime/v)*v; });
+  state.nextTick=Math.ceil(state.vtime/v)*v;
+  state.missTicks.clear(); });   // tick alignment changed — drop stale miss marks
 seg('bits','bits',Number,v=>{ state.bits=v; });
 seg('speed','speed',Number,v=>{ state.speed=v; });
 seg('pwmmode','pwm',String,v=>{ state.pwmMode=v; });
+seg('overrun','ovr',v=>v==='on',v=>{ state.overrun=v; if(!v) state.missTicks.clear(); });
 
 document.getElementById('kick').addEventListener('click',()=>{
   state.kickT=state.vtime; state.kickAmp=(Math.random()>0.5?1:-1)*(10+Math.random()*6);

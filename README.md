@@ -21,6 +21,7 @@ Built to make one point land for a non-specialist: *the interrupt period isn't a
 - **Interrupt period `T_isr`** — 20 / 10 / 5 / 2 / 1 µs. The one knob that matters.
 - **ADC width** — 8 / 12 / **18**-bit. Watch the sample-and-hold staircase get finer; the core word and packet hex widen to match.
 - **PWM carrier** — Per-ISR or fixed 1 MHz (drives the red/green stale-vs-fresh story in both the PWM strip and the scope rail).
+- **ISR overrun** — Off / On. When on, the ISR is given a realistic execution time (`base + jitter`, plus extra while handling a disturbance). If that exceeds `T_isr`, the deadline is **blown**: the due update is *dropped* (the PWM holds, no fresh push) and the period is drawn **hatched magenta** — distinct from stale-red. Fast loops have little margin (1 µs blows occasionally even idle, ~30 % during a glitch); slow loops never overrun. This is the difference between *stale data* (you chose to update slowly) and a *missed deadline* (you tried and ran out of time).
 - **Slow-mo** — 0.5× / 1× / 2× virtual-time rate.
 - **⚡ Inject disturbance**, **⏸ Pause**, **● Record 3s GIF**.
 
