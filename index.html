@@ -135,8 +135,9 @@
     <div class="legend">
       <span><i style="background:var(--cyan)"></i>Analog voltage (the real world)</span>
       <span><i style="background:var(--amber)"></i>ADC sample &amp; hold (the bits)</span>
-      <span><i style="background:var(--green)"></i>Delivered output (GaN rail)</span>
-      <span><i style="background:var(--red);opacity:.5"></i>Tracking error</span>
+      <span><i style="background:var(--green)"></i>Rail — fresh data</span>
+      <span><i style="background:var(--red)"></i>Rail — stale / held</span>
+      <span><i style="background:var(--red);opacity:.3"></i>Tracking error</span>
     </div>
     <div class="status" id="status">Ready.</div>
   </div>
@@ -442,11 +443,24 @@ function drawScope(){
     X.fillStyle=COL.amber; X.beginPath(); X.arc(x,y,2.6,0,7); X.fill();
   }
 
-  // delivered output (GaN rail)
-  X.strokeStyle=COL.green; X.lineWidth=2; X.beginPath(); started=false;
-  for(const h of state.voutHist){ const x=tToX(h.t),y=vToY(h.v);
-    if(x<SCOPE.x-2)continue; started?X.lineTo(x,y):(X.moveTo(x,y),started=true);}
-  X.stroke();
+  // delivered output (GaN rail) — colored by command freshness:
+  // green where a fresh ISR update just landed, red where the rail coasts on
+  // held/stale data. In Per-ISR mode the whole period is one update -> all green.
+  {
+    const Tc = state.pwmMode==='fixed' ? 1 : state.isrUs;   // fresh-window width, µs
+    const isFresh = t => (((t % state.isrUs)+state.isrUs)%state.isrUs) < Tc;
+    X.lineWidth=2;
+    let prev=null;
+    for(const h of state.voutHist){
+      const x=tToX(h.t), y=vToY(h.v);
+      if(x<SCOPE.x-2){ prev={x,y,t:h.t}; continue; }
+      if(prev){
+        X.strokeStyle = isFresh(h.t) ? COL.green : COL.red;
+        X.beginPath(); X.moveTo(prev.x,prev.y); X.lineTo(x,y); X.stroke();
+      }
+      prev={x,y,t:h.t};
+    }
+  }
 
   // now cursor
   X.strokeStyle='rgba(255,255,255,0.25)'; X.lineWidth=1;
