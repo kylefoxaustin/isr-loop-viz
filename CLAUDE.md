@@ -20,8 +20,13 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
 
 1. **Pipeline** (`drawPipeline`) — 5 stage boxes + connectors + flowing bit packets.
 2. **Oscilloscope** (`drawScope`) — analog truth (cyan), ADC sample-and-hold +
-   strobe lines (amber), delivered rail (green), error shading (red).
-3. **PWM strip** (`drawPWM`) — gate waveform, one period per interrupt.
+   strobe lines (amber), delivered rail (bold smooth line + translucent ripple
+   **band**), error shading (faint red). The rail + band are colored by command
+   **freshness**: green where a fresh ISR update just landed, red where it coasts
+   on held/stale data. `drawGlitch` overlays the disturbance verdict (see below).
+3. **PWM strip** (`drawPWM`) — gate waveform. Two carrier modes (`state.pwmMode`):
+   `'isr'` = one period per interrupt (all green); `'fixed'` = 1 MHz carrier where
+   replayed/stale periods are red and the fresh period after each ISR tick is green.
 4. **Metrics** (`drawMeta`) — chips + verdict banner + slow-mo factor.
 
 ### Simulation model (the honest part)
@@ -35,8 +40,21 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
 - Output `vout` integrates toward `uApplied` with **fixed** load time constant
   `cfg.tauLoad = 3µs` (the LC filter + battery — it's physical, it does NOT scale
   with the ISR knob; that's the whole lesson).
-- Displayed rail adds switching ripple ∝ `(T_isr/τ)²` (right shape for buck ripple
-  ∝ 1/f_sw²; magnitude tuned for legibility, clamped).
+- Switching ripple ∝ `(T_isr/τ)²` (right shape for buck ripple ∝ 1/f_sw²; magnitude
+  tuned for legibility, clamped via `rippleVpp()`). It is **not** baked into the
+  rail line — `voutHist` stores `{t, v:vout, rip:rippleVpp()*0.5}` and the scope
+  draws the smooth `v` as a line inside a `±rip` band. (This is what made the 20µs
+  view legible — the old code added a triangle ripple straight onto the line and it
+  whipped up and down like noise.)
+- **Freshness** (`drawScope`/`drawPWM`): a carrier period / rail segment is "fresh"
+  when `(t mod isrUs) < Tcarrier`, where `Tcarrier = 1µs` in fixed mode else `isrUs`.
+  Fresh → green, stale → red. So per-ISR mode is all-green; fixed-1MHz at 20µs is
+  ~95% red.
+- **Disturbance verdict** (`drawGlitch`): on a kick, the next ADC sample is
+  `ts = ceil(kickT/isrUs)*isrUs`; `blind = ts-kickT` and `captured = exp(-blind/9)`
+  (9µs = the disturbance decay τ in `vsig`). ≥0.6 CAUGHT (green), ≥0.3 PARTIAL
+  (amber), else MISSED (red). Phase-dependent — a slow loop *occasionally* gets
+  lucky, which is honest.
 - Verdict from `r = isrUs/tauLoad`: ≤0.45 REAL-TIME, ≤1.5 MARGINAL, else STROBED.
 
 Virtual time advances in `advance(dtv)` with a 0.2µs sub-step integrator decoupled
@@ -89,6 +107,11 @@ Blueprint/CAD aesthetic, shared with the `robot-power-budget` project:
 - **Re-tune the 1µs vs 5µs contrast** → `cfg.tauLoad` and the `rippleVpp()` /
   `verdict()` thresholds. Bigger `tauLoad` softens the contrast; smaller sharpens it.
 - **Add an ISR period option** → add a `<button data-isr="N">` in `#isr`.
+- **Add an ADC width** → add a `<button data-bits="N">` in `#bits`. The core word
+  splits in half adaptively (`<12 bits` uses 12px font, else 10px) and the packet
+  hex label box auto-sizes, so wide words don't overflow.
+- **Re-tune the glitch verdict** → thresholds + the `exp(-blind/9)` decay in
+  `drawGlitch` (9µs must match the disturbance τ in `vsig`).
 - **Change ADC range / signal** → `cfg.center/amp/Tsig/vmin/vmax`.
 - **Robotics scenario** (instead of power conversion) → swap the GaN-stage glyph
   and rename the rail to a joint position/torque; the loop math is identical.
@@ -106,6 +129,14 @@ casual, technical, direct. No corporate hedging, no marketing voice.
 - Fix: removed divide-by-zero packet placeholder.
 - Validated physics headlessly across 20/10/5/2/1 µs; screenshotted all three
   regimes; confirmed GIF encode path runs from file://.
+- Added **fixed 1 MHz PWM carrier** mode (red = replayed/stale, green = fresh) +
+  an **18-bit** ADC option (adaptive core-word split, auto-sized packet hex).
+- Reworked the rail render: **ripple as a translucent band** around a smooth line
+  (killed the 20µs zigzag); rail + band colored by **freshness** (green/red).
+- Folded freshness into the kick: **blind window + CAUGHT/PARTIAL/MISSED** verdict
+  (`drawGlitch`).
+- Validated all of the above headlessly (Chrome `--virtual-time-budget`; glitch
+  injected via a temp `setTimeout` in throwaway copies since `state` is closure-scoped).
 
 ---
 TTA

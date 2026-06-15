@@ -11,9 +11,18 @@ Built to make one point land for a non-specialist: *the interrupt period isn't a
 ## What it shows
 
 - **Pipeline band** — the five stages with live readouts: the analog source, the ADC strobe, the core's binary word, the PWM duty, and the GaN rail filling a little battery. Bit packets flow ADC → core → PWM at the real tick rate.
-- **Oscilloscope** — the true analog voltage (cyan), the ADC sample-and-hold staircase + strobe lines (amber), and the delivered rail (green), with the tracking error shaded red between them.
-- **PWM drive** — the actual gate waveform, one PWM period per interrupt, with the resulting switching frequency.
+- **Oscilloscope** — the true analog voltage (cyan), the ADC sample-and-hold staircase + strobe lines (amber), and the delivered rail. The rail is a **bold smooth line inside a translucent switching-ripple band**, and both are colored by *freshness*: **green** where a fresh ISR update just landed, **red** where the rail is coasting on held/stale data. Tracking error is shaded faint red.
+- **PWM drive** — the gate waveform. Two carrier modes: **Per-ISR** (one PWM period per interrupt) or a fixed **1 MHz** carrier where periods that merely replay the held command are drawn **red** and the one fresh period after each ISR update stays **green** — so you can literally count how much of the output is stale.
 - **Metrics + verdict** — loop rate, `T_isr / τ_load` ratio, samples per signal cycle, output ripple, tracking RMS error, control bandwidth, and a plain-English verdict.
+- **Disturbance verdict** — hit **⚡ Inject disturbance** and the scope marks the glitch, shades the **blind window** (glitch → next ADC sample), and renders a **CAUGHT / PARTIAL / MISSED** verdict with the % of the spike that survived to the first sample. At 1 µs the loop catches ~99 %; at 20 µs it's usually blind long enough that most of the spike has decayed unseen.
+
+## Controls
+
+- **Interrupt period `T_isr`** — 20 / 10 / 5 / 2 / 1 µs. The one knob that matters.
+- **ADC width** — 8 / 12 / **18**-bit. Watch the sample-and-hold staircase get finer; the core word and packet hex widen to match.
+- **PWM carrier** — Per-ISR or fixed 1 MHz (drives the red/green stale-vs-fresh story in both the PWM strip and the scope rail).
+- **Slow-mo** — 0.5× / 1× / 2× virtual-time rate.
+- **⚡ Inject disturbance**, **⏸ Pause**, **● Record 3s GIF**.
 
 ## Why 1 µs ≫ 5 µs
 
