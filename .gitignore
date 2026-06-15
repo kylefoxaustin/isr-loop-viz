@@ -1,0 +1,20 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Misc
+*.log
+.env
+*.gif
+
+# Recovery archive
+isr-loop-visualizer.zip
+*.zip
