@@ -137,6 +137,7 @@
       <span><i style="background:var(--amber)"></i>ADC sample &amp; hold (the bits)</span>
       <span><i style="background:var(--green)"></i>Rail — fresh data</span>
       <span><i style="background:var(--red)"></i>Rail — stale / held</span>
+      <span><i style="background:rgba(255,93,108,.22);height:9px;border-radius:2px"></i>± switching ripple (band)</span>
       <span><i style="background:var(--red);opacity:.3"></i>Tracking error</span>
     </div>
     <div class="status" id="status">Ready.</div>
@@ -244,9 +245,9 @@ function advance(dtv){
     const dv = (state.uApplied - state.vout)/cfg.tauLoad * step;
     state.vout += dv;
     state.vtime = t1;
-    // record displayed output (averaged + switching ripple)
-    const rip = rippleVpp()*0.5*triangle(state.vtime/state.isrUs);
-    state.voutHist.push({t:state.vtime, v:state.vout + rip});
+    // record the averaged rail (smooth) + switching-ripple half-amplitude;
+    // the ripple is drawn as a translucent band, not baked into the line
+    state.voutHist.push({t:state.vtime, v:state.vout, rip:rippleVpp()*0.5});
     remaining -= step;
   }
   // prune to window
@@ -443,23 +444,39 @@ function drawScope(){
     X.fillStyle=COL.amber; X.beginPath(); X.arc(x,y,2.6,0,7); X.fill();
   }
 
-  // delivered output (GaN rail) — colored by command freshness:
-  // green where a fresh ISR update just landed, red where the rail coasts on
-  // held/stale data. In Per-ISR mode the whole period is one update -> all green.
+  // delivered output (GaN rail): a bold smooth center line inside a translucent
+  // switching-ripple band, both colored by command freshness — green where a
+  // fresh ISR update just landed, red where the rail coasts on held/stale data.
+  // In Per-ISR mode the whole period is one update -> all green.
   {
     const Tc = state.pwmMode==='fixed' ? 1 : state.isrUs;   // fresh-window width, µs
     const isFresh = t => (((t % state.isrUs)+state.isrUs)%state.isrUs) < Tc;
-    X.lineWidth=2;
+    X.save(); X.beginPath(); X.rect(SCOPE.x,SCOPE.y,SCOPE.w,SCOPE.h); X.clip();
+    // ripple band (drawn under the line)
     let prev=null;
     for(const h of state.voutHist){
+      const x=tToX(h.t), yHi=vToY(h.v+h.rip), yLo=vToY(h.v-h.rip);
+      if(prev && x>=SCOPE.x-2){
+        X.fillStyle = isFresh(h.t) ? 'rgba(70,224,138,0.16)' : 'rgba(255,93,108,0.16)';
+        X.beginPath();
+        X.moveTo(prev.x,prev.yHi); X.lineTo(x,yHi);
+        X.lineTo(x,yLo); X.lineTo(prev.x,prev.yLo);
+        X.closePath(); X.fill();
+      }
+      prev={x,yHi,yLo};
+    }
+    // bold smooth center line
+    prev=null; X.lineWidth=2.4;
+    for(const h of state.voutHist){
       const x=tToX(h.t), y=vToY(h.v);
-      if(x<SCOPE.x-2){ prev={x,y,t:h.t}; continue; }
+      if(x<SCOPE.x-2){ prev={x,y}; continue; }
       if(prev){
         X.strokeStyle = isFresh(h.t) ? COL.green : COL.red;
         X.beginPath(); X.moveTo(prev.x,prev.y); X.lineTo(x,y); X.stroke();
       }
-      prev={x,y,t:h.t};
+      prev={x,y};
     }
+    X.restore();
   }
 
   // now cursor
