@@ -40,7 +40,9 @@ horizontal bands so a single canvas grab = a complete, self-explanatory figure
 
 ### Simulation model (the honest part)
 
-- `vsig(t)` — analog source: sine (`Tsig=64µs`, `center=24V`, `amp=9V`) plus an
+- `vsig(t)` — analog source: sine (`Tsig=64µs`, `center=48V`, `amp=7V`, so it swings
+  ~41–55V around a 48V-class rail; ADC range `0–60V`, safe window `40–56V` = 13S Li-ion
+  over-discharge / overcharge) plus an
   optional decaying disturbance (`kickT`, `kickAmp`).
 - ADC samples at every `nextTick` (`isrUs` apart), quantizes to `bits` (8 or 12).
 - **One-period transport delay** is modeled explicitly: the sample latched at tick
@@ -100,7 +102,7 @@ the `"__GIF_WORKER_B64__"` token first, or replace the existing base64 string.)
 ## Gotchas / things already fixed
 
 - **ADC bit depth is sub-pixel on the waveform — by design, don't "fix" it.** One LSB
-  on the 48V range over the 250px scope (~5.2 px/V): 8-bit ≈ 1.0px, 12-bit ≈ 0.06px,
+  on the 60V range over the 250px scope (~4.2 px/V): 8-bit ≈ 1.0px, 12-bit ≈ 0.06px,
   18-bit ≈ 0.001px. So changing bits does NOT visibly move the staircase/rail — the
   visible steps are *temporal* (sample-and-hold), not amplitude quantization. The
   `bits` knob is surfaced honestly through the **ADC LSB** metric chip + the binary

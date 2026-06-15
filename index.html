@@ -184,8 +184,8 @@ const FONT = '"JetBrains Mono", ui-monospace, monospace';
 const cfg = {
   windowUs: 90,      // scope time window
   Tsig: 64,          // analog signal period (us)
-  vmin: 0, vmax: 48, // ADC range / rail volts
-  center: 24, amp: 9,
+  vmin: 0, vmax: 60, // ADC range / rail volts (48V-class system, headroom above full charge)
+  center: 48, amp: 7,// 48V Li-ion (13S): nominal ~48V, swings ~41–55V (empty → full charge)
   tauLoad: 3.0,      // load (LC + battery) time constant, us — FIXED, it's physical
   // ISR execution-time model (only used when overrun mode is on):
   isrBaseUs: 0.72,      // nominal ISR compute time
@@ -193,11 +193,11 @@ const cfg = {
   isrGlitchCostUs: 1.8, // extra compute while handling a fresh disturbance
   // battery / power-stage model (teaching values, not a datasheet):
   esr: 0.05,            // pack internal resistance, Ω
-  zRipple: 1.4,         // effective ripple impedance rail → pack, Ω
+  zRipple: 1.1,         // effective ripple impedance rail → pack, Ω
   rTh: 10,              // thermal resistance, °C/W (heat rise per watt of loss)
   ambient: 25,          // ambient temperature, °C
   battTauReal: 4,       // thermal time constant, real seconds (heat-up / cool-down lag)
-  vMax: 36, vMin: 12    // safe operating-voltage window (rails outside = stress)
+  vMax: 56, vMin: 40    // safe operating-voltage window: 13S Li-ion overcharge / over-discharge
 };
 
 const state = {
@@ -588,7 +588,7 @@ function drawScope(){
 
   // y labels
   X.fillStyle=COL.dim; X.font='10px '+FONT; X.textAlign='right';
-  [0,12,24,36,48].forEach(v=>{ X.fillText(v+'V', SCOPE.x-6, vToY(v)+3); });
+  [0,15,30,45,60].forEach(v=>{ X.fillText(v+'V', SCOPE.x-6, vToY(v)+3); });
 }
 
 // ----- safe operating-voltage window: ripple punching past the limits = stress -----

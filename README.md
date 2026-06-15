@@ -4,6 +4,8 @@ An interactive, single-file explainer for the classic embedded control loop:
 
 > **continuous voltage → ADC samples it into bits → core reformats / computes → PWM clocks it back out → GaN power stage drives a rail**
 
+Modeled as a **48 V-class system** — a GaN DC-DC converter regulating a 48 V Li-ion rail (13S, ~48 V nominal / 54.6 V full charge), the kind of high-frequency conversion GaN is made for.
+
 Built to make one point land for a non-specialist: *the interrupt period isn't a knob you turn for "speed" — it decides whether your output tracks reality or just photographs it.* Slide the ISR period from **20 µs** down to **1 µs** and watch the sample-and-hold staircase tighten onto the curve, the output ripple collapse, and the verdict flip from **STROBED** to **REAL-TIME**.
 
 ![screenshot](docs/screenshot.png)
@@ -20,7 +22,7 @@ Built to make one point land for a non-specialist: *the interrupt period isn't a
 ## Controls
 
 - **Interrupt period `T_isr`** — 20 / 10 / 5 / 2 / 1 µs. The one knob that matters.
-- **ADC width** — 8 / 12 / **18**-bit. Changes the quantization step shown in the **ADC LSB** metric (188 mV → 11.7 mV → 0.18 mV) and widens the binary word + packet hex. Note: on a 48 V / 250 px scope even 8-bit is only ~1 px of stair-stepping, so the *waveform* barely moves — in this loop the **temporal** sample-and-hold dominates, not amplitude quantization. The metric is where the bit depth actually shows.
+- **ADC width** — 8 / 12 / **18**-bit. Changes the quantization step shown in the **ADC LSB** metric (235 mV → 14.7 mV → 0.23 mV over the 60 V range) and widens the binary word + packet hex. Note: on a 60 V / 250 px scope even 8-bit is only ~1 px of stair-stepping, so the *waveform* barely moves — in this loop the **temporal** sample-and-hold dominates, not amplitude quantization. The metric is where the bit depth actually shows.
 - **PWM carrier** — Per-ISR or fixed 1 MHz (drives the red/green stale-vs-fresh story in both the PWM strip and the scope rail).
 - **ISR overrun** — Off / On. When on, the ISR is given a realistic execution time (`base + jitter`, plus extra while handling a disturbance). If that exceeds `T_isr`, the deadline is **blown**: the due update is *dropped* (the PWM holds, no fresh push) and the period is drawn **hatched magenta** — distinct from stale-red. Fast loops have little margin (1 µs blows occasionally even idle, ~30 % during a glitch); slow loops never overrun. This is the difference between *stale data* (you chose to update slowly) and a *missed deadline* (you tried and ran out of time).
 - **Slow-mo** — 0.5× / 1× / 2× virtual-time rate.
@@ -32,7 +34,7 @@ The load (LC filter + battery) has a **fixed physical time constant** `τ_load �
 
 | T_isr | r = T_isr/τ | Output ripple | Verdict |
 |------:|:-----------:|:-------------:|:--------|
-| 20 µs | 6.7× | ~12.6 Vpp | STROBED |
+| 20 µs | 6.7× | ~9.8 Vpp | STROBED |
 | 5 µs  | 1.7× | ~2.5 Vpp  | STROBED (marginal) |
 | 2 µs  | 0.67× | ~0.4 Vpp | MARGINAL |
 | 1 µs  | 0.33× | ~0.1 Vpp | REAL-TIME |
@@ -53,8 +55,8 @@ So at the same average power:
 
 | T_isr | ripple current | cell temp | aging |
 |------:|:--------------:|:---------:|:-----:|
-| 20 µs | ~9 A | ~66 °C 🔥 | ~16× faster |
-| 5 µs  | ~1.8 A | ~27 °C | ~1.1× |
+| 20 µs | ~9 A | ~65 °C 🔥 | ~16× faster |
+| 5 µs  | ~2.3 A | ~28 °C | ~1.2× |
 | 1 µs  | ~0.1 A | ~25 °C ❄ | 1× |
 
 A slow loop doesn't just track poorly — it **cooks the battery and overshoots the safe-voltage window**. A fast loop keeps the pack cool, efficient, and inside its limits. That's the "switch faster, close the loop cycle-by-cycle" argument extended all the way to pack life. (Battery constants — ESR, thermal resistance, safe window — are teaching values in `cfg`.)
