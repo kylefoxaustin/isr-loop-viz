@@ -104,6 +104,15 @@
         <div class="seg amber" id="bits" role="group" aria-label="ADC bit width">
           <button data-bits="8"  aria-pressed="false">8-bit</button>
           <button data-bits="12" aria-pressed="true">12-bit</button>
+          <button data-bits="18" aria-pressed="false">18-bit</button>
+        </div>
+      </div>
+
+      <div class="ctl">
+        <label for="pwmmode">PWM carrier</label>
+        <div class="seg" id="pwmmode" role="group" aria-label="PWM carrier mode">
+          <button data-pwm="isr"   aria-pressed="true">Per-ISR</button>
+          <button data-pwm="fixed" aria-pressed="false">1 MHz</button>
         </div>
       </div>
 
@@ -171,6 +180,7 @@ const cfg = {
 
 const state = {
   isrUs: 5, bits: 12, speed: 14, playing: true,
+  pwmMode: 'isr',            // 'isr' = one PWM period per interrupt; 'fixed' = 1 MHz carrier
   vtime: 0,
   nextTick: 0,
   sampleLatch: cfg.center,   // most recent ADC sample (held)
@@ -339,9 +349,10 @@ function drawStageGlyph(k,cx,cy,bw,hot){
       X.lineTo(i,py); X.lineTo(i,y); py=y;} X.stroke();
   } else if(k==='core'){
     const s = state.sampleHist.length?state.sampleHist[state.sampleHist.length-1]:{code:0};
-    X.fillStyle=COL.amber; X.font='12px '+FONT; X.textAlign='center';
+    X.fillStyle=COL.amber; X.font=(state.bits>12?'10px ':'12px ')+FONT; X.textAlign='center';
     const bin = s.code.toString(2).padStart(state.bits,'0');
-    X.fillText(bin.slice(0,6), 0,-2); X.fillText(bin.slice(6), 0,13);
+    const half = Math.ceil(bin.length/2);
+    X.fillText(bin.slice(0,half), 0,-2); X.fillText(bin.slice(half), 0,13);
   } else if(k==='pwm'){
     const duty = (state.uApplied-cfg.vmin)/(cfg.vmax-cfg.vmin);
     X.strokeStyle=COL.green; X.lineWidth=2; X.beginPath();
@@ -371,10 +382,12 @@ function drawPackets(boxes, now){
   const newest=inflight.length?inflight[inflight.length-1]:null;
   if(newest && newest.f<0.6){
     const px=xA+(xB-xA)*newest.f;
+    const hex='0x'+newest.p.code.toString(16).toUpperCase().padStart(Math.ceil(state.bits/4),'0');
+    const bw=Math.max(32, hex.length*6.2+8);
     X.fillStyle=COL.amber;
-    roundRect(px-16,y-21,32,15,4); X.fill();
+    roundRect(px-bw/2,y-21,bw,15,4); X.fill();
     X.fillStyle='#1a1304'; X.font='9px '+FONT; X.textAlign='center';
-    X.fillText('0x'+newest.p.code.toString(16).toUpperCase().padStart(3,'0'), px, y-10);
+    X.fillText(hex, px, y-10);
   }
 }
 
@@ -446,33 +459,61 @@ function drawScope(){
 
 // ----- pwm strip -----
 function drawPWM(){
-  panelBox(PWM.x-12, PWM.y-22, PWM.w+24, PWM.h+34, 'PWM DRIVE · GaN gate', COL.green);
+  const fixed = state.pwmMode==='fixed';
+  panelBox(PWM.x-12, PWM.y-22, PWM.w+24, PWM.h+34,
+    fixed?'PWM DRIVE · GaN gate · fixed 1 MHz carrier':'PWM DRIVE · GaN gate', COL.green);
   gridRect(PWM);
   const t0=state.vtime-cfg.windowUs;
   const baseY=PWM.y+PWM.h-14, topY=PWM.y+14;
-  X.strokeStyle=COL.green; X.lineWidth=1.8; X.beginPath();
-  // reconstruct duty per tick from sampleHist (delayed by one)
-  let prevState=null;
-  for(let px=0;px<=PWM.w;px++){
-    const t=t0+px/PWM.w*cfg.windowUs;
-    const k=Math.floor(t/state.isrUs);
-    // duty for this period from the sample taken at previous tick
-    const samp = nearestSample((k-1)*state.isrUs);
-    const duty = samp==null?0.5:(samp.v-cfg.vmin)/(cfg.vmax-cfg.vmin);
-    const phase = (t - k*state.isrUs)/state.isrUs;
-    const hi = phase < duty;
-    const y = hi?topY:baseY;
-    const xx=PWM.x+px;
-    if(px===0){ X.moveTo(xx,y); }
-    else { if(prevState!==hi) X.lineTo(xx, prevState?topY:baseY); X.lineTo(xx,y); }
-    prevState=hi;
+  const Tpwm = fixed ? 1 : state.isrUs;                       // carrier period, µs
+  const tToXp = t => PWM.x + (t - t0)/cfg.windowUs * PWM.w;
+  const clamp01 = x => x<0?0:x>1?1:x;
+
+  X.save(); X.beginPath(); X.rect(PWM.x,PWM.y,PWM.w,PWM.h); X.clip();
+  const kStart=Math.floor(t0/Tpwm), kEnd=Math.ceil(state.vtime/Tpwm);
+  let stale=0, shown=0;
+  for(let k=kStart;k<kEnd;k++){
+    const pStart=k*Tpwm, pEnd=pStart+Tpwm;
+    // applied command this carrier period (1-ISR-period transport delay)
+    const m=Math.floor((pStart+1e-6)/state.isrUs);
+    const samp=nearestSample((m-1)*state.isrUs);
+    const duty=samp==null?0.5:(samp.v-cfg.vmin)/(cfg.vmax-cfg.vmin);
+    // "fresh" = a new ISR computation landed at the start of this carrier period;
+    // any other carrier in fixed mode is just replaying the held command -> red
+    const fresh = !fixed || (((k % state.isrUs)+state.isrUs)%state.isrUs === 0);
+    const xs=tToXp(pStart), xe=tToXp(pEnd), xhi=tToXp(pStart+clamp01(duty)*Tpwm);
+    shown++; if(!fresh) stale++;
+    // background band for fixed mode: red = time spent on stale, replayed data
+    if(fixed){
+      X.fillStyle = fresh ? 'rgba(70,224,138,0.10)' : 'rgba(255,93,108,0.13)';
+      X.fillRect(xs, PWM.y, Math.max(1,xe-xs), PWM.h);
+      X.strokeStyle='rgba(53,208,255,0.10)'; X.lineWidth=1;
+      X.beginPath(); X.moveTo(xs,PWM.y); X.lineTo(xs,PWM.y+PWM.h); X.stroke();
+    }
+    // the gate pulse for this carrier period
+    X.strokeStyle = fresh ? COL.green : COL.red; X.lineWidth=1.8;
+    X.beginPath();
+    X.moveTo(xs, baseY); X.lineTo(xs, topY);
+    X.lineTo(xhi, topY); X.lineTo(xhi, baseY);
+    X.lineTo(xe, baseY); X.stroke();
   }
-  X.stroke();
-  // switching freq note
-  const fsw = (1000/state.isrUs);
-  X.fillStyle=COL.dim; X.font='10px '+FONT; X.textAlign='left';
-  X.fillText('f_sw = '+(fsw>=1000?(fsw/1000).toFixed(2)+' MHz':fsw.toFixed(0)+' kHz')
-    +'   (one PWM period per interrupt)', PWM.x+6, PWM.y+PWM.h+18);
+  X.restore();
+
+  // note
+  X.font='10px '+FONT; X.textAlign='left';
+  if(fixed){
+    const stalePct = state.isrUs>1 ? Math.round((1-1/state.isrUs)*100) : 0;
+    X.fillStyle = state.isrUs>1 ? COL.red : COL.green;
+    const note = state.isrUs>1
+      ? 'f_sw = 1.00 MHz fixed  ·  ISR refreshes 1 of every '+state.isrUs+' carrier periods  ·  '+stalePct+'% replay STALE data (red)'
+      : 'f_sw = 1.00 MHz fixed  ·  ISR refreshes every carrier period  ·  0% stale — fully REAL-TIME (all green)';
+    X.fillText(note, PWM.x+6, PWM.y+PWM.h+18);
+  } else {
+    const fsw = 1000/state.isrUs;
+    X.fillStyle=COL.dim;
+    X.fillText('f_sw = '+(fsw>=1000?(fsw/1000).toFixed(2)+' MHz':fsw.toFixed(0)+' kHz')
+      +'   (one PWM period per interrupt)', PWM.x+6, PWM.y+PWM.h+18);
+  }
 }
 function nearestSample(t){
   // last sample at or before t
@@ -554,6 +595,7 @@ seg('isr','isr',Number,v=>{ state.isrUs=v;
   state.nextTick=Math.ceil(state.vtime/v)*v; });
 seg('bits','bits',Number,v=>{ state.bits=v; });
 seg('speed','speed',Number,v=>{ state.speed=v; });
+seg('pwmmode','pwm',String,v=>{ state.pwmMode=v; });
 
 document.getElementById('kick').addEventListener('click',()=>{
   state.kickT=state.vtime; state.kickAmp=(Math.random()>0.5?1:-1)*(10+Math.random()*6);
