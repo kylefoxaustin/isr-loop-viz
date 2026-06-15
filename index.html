@@ -220,6 +220,23 @@ function verdict(){
   return {t:'STROBED', c:COL.red, why:'load drifts open-loop between updates — you only photograph the signal'};
 }
 
+// ---- staleness (shared by the scope rail + the PWM strip) ----
+// A moment is RED when the output is serving stale data — either because the
+// carrier is replaying a held command between ISR updates (structural), OR
+// because it's inside the glitch "blind window": from the disturbance until the
+// first sample that sees it is actually applied (sample latency + 1-period
+// transport delay). The glitch case is the only thing that turns 1µs red.
+function carrierFresh(t){
+  const Tc = state.pwmMode==='fixed' ? 1 : state.isrUs;   // fresh-window width, µs
+  return (((t % state.isrUs)+state.isrUs)%state.isrUs) < Tc;
+}
+function glitchBlind(t){
+  if(!state.kickAmp || t < state.kickT) return false;
+  const ts = Math.ceil((state.kickT+1e-6)/state.isrUs)*state.isrUs;  // 1st sample to see it
+  return t < ts + state.isrUs;                                        // + transport delay
+}
+function isStale(t){ return !carrierFresh(t) || glitchBlind(t); }
+
 // ---- simulation step ----
 function advance(dtv){
   // dtv: virtual microseconds to advance
@@ -440,19 +457,17 @@ function drawScope(){
   }
 
   // delivered output (GaN rail): a bold smooth center line inside a translucent
-  // switching-ripple band, both colored by command freshness — green where a
-  // fresh ISR update just landed, red where the rail coasts on held/stale data.
-  // In Per-ISR mode the whole period is one update -> all green.
+  // switching-ripple band, both colored by isStale() — green when the output
+  // reflects current reality, red when it's serving held/stale or glitch-blind
+  // data. Per-ISR mode is all-green except for the brief red blip after a kick.
   {
-    const Tc = state.pwmMode==='fixed' ? 1 : state.isrUs;   // fresh-window width, µs
-    const isFresh = t => (((t % state.isrUs)+state.isrUs)%state.isrUs) < Tc;
     X.save(); X.beginPath(); X.rect(SCOPE.x,SCOPE.y,SCOPE.w,SCOPE.h); X.clip();
     // ripple band (drawn under the line)
     let prev=null;
     for(const h of state.voutHist){
       const x=tToX(h.t), yHi=vToY(h.v+h.rip), yLo=vToY(h.v-h.rip);
       if(prev && x>=SCOPE.x-2){
-        X.fillStyle = isFresh(h.t) ? 'rgba(70,224,138,0.16)' : 'rgba(255,93,108,0.16)';
+        X.fillStyle = isStale(h.t) ? 'rgba(255,93,108,0.16)' : 'rgba(70,224,138,0.16)';
         X.beginPath();
         X.moveTo(prev.x,prev.yHi); X.lineTo(x,yHi);
         X.lineTo(x,yLo); X.lineTo(prev.x,prev.yLo);
@@ -466,7 +481,7 @@ function drawScope(){
       const x=tToX(h.t), y=vToY(h.v);
       if(x<SCOPE.x-2){ prev={x,y}; continue; }
       if(prev){
-        X.strokeStyle = isFresh(h.t) ? COL.green : COL.red;
+        X.strokeStyle = isStale(h.t) ? COL.red : COL.green;
         X.beginPath(); X.moveTo(prev.x,prev.y); X.lineTo(x,y); X.stroke();
       }
       prev={x,y};
@@ -578,13 +593,14 @@ function drawPWM(){
     const m=Math.floor((pStart+1e-6)/state.isrUs);
     const samp=nearestSample((m-1)*state.isrUs);
     const duty=samp==null?0.5:(samp.v-cfg.vmin)/(cfg.vmax-cfg.vmin);
-    // "fresh" = a new ISR computation landed at the start of this carrier period;
-    // any other carrier in fixed mode is just replaying the held command -> red
-    const fresh = !fixed || (((k % state.isrUs)+state.isrUs)%state.isrUs === 0);
+    // fresh = a new ISR computation landed this carrier AND it isn't inside the
+    // glitch blind window. Structural staleness only bites in fixed mode; the
+    // glitch blind window is what turns a 1µs carrier red right after a kick.
+    const fresh = !isStale(pStart);
     const xs=tToXp(pStart), xe=tToXp(pEnd), xhi=tToXp(pStart+clamp01(duty)*Tpwm);
     shown++; if(!fresh) stale++;
-    // background band for fixed mode: red = time spent on stale, replayed data
-    if(fixed){
+    // background band: red = time spent on stale / replayed / glitch-blind data
+    if(fixed || !fresh){
       X.fillStyle = fresh ? 'rgba(70,224,138,0.10)' : 'rgba(255,93,108,0.13)';
       X.fillRect(xs, PWM.y, Math.max(1,xe-xs), PWM.h);
       X.strokeStyle='rgba(53,208,255,0.10)'; X.lineWidth=1;
