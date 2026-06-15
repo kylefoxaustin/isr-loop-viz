@@ -409,14 +409,9 @@ function drawScope(){
     X.beginPath(); X.moveTo(x,SCOPE.y); X.lineTo(x,SCOPE.y+SCOPE.h); X.stroke();
   }
 
-  // analog curve (truth)
-  X.strokeStyle=COL.cyan; X.lineWidth=2; X.beginPath();
+  // (the analog truth curve is drawn LAST — see below — so the glitch spike
+  //  pops over the ripple band / staircase instead of getting buried under them)
   const t0=state.vtime-cfg.windowUs;
-  for(let px=0;px<=SCOPE.w;px++){
-    const t=t0+px/SCOPE.w*cfg.windowUs; const y=vToY(vsig(t));
-    px===0?X.moveTo(SCOPE.x+px,y):X.lineTo(SCOPE.x+px,y);
-  }
-  X.stroke();
 
   // error shading between analog and delivered
   if(state.voutHist.length>1){
@@ -476,6 +471,24 @@ function drawScope(){
       }
       prev={x,y};
     }
+    X.restore();
+  }
+
+  // analog truth (cyan) drawn on top — thickens + glows while a disturbance is
+  // live so the spike punches out of the staircase/ripple noise, then settles
+  {
+    const gAmp = (state.kickAmp && state.vtime>=state.kickT)
+      ? Math.abs(state.kickAmp)*Math.exp(-(state.vtime-state.kickT)/9) : 0;
+    const emph = Math.min(1, gAmp/8);              // 0 = calm, 1 = fresh big glitch
+    X.save();
+    X.strokeStyle=COL.cyan; X.lineWidth=2 + 2.6*emph;
+    if(emph>0.03){ X.shadowColor=COL.cyan; X.shadowBlur=16*emph; }
+    X.beginPath();
+    for(let px=0;px<=SCOPE.w;px++){
+      const t=t0+px/SCOPE.w*cfg.windowUs, y=vToY(vsig(t));
+      px===0?X.moveTo(SCOPE.x+px,y):X.lineTo(SCOPE.x+px,y);
+    }
+    X.stroke();
     X.restore();
   }
 
