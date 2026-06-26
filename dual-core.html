@@ -38,7 +38,7 @@
   .panel::before{top:-1px;left:-1px;border-right:none;border-bottom:none}
   .panel::after{bottom:-1px;right:-1px;border-left:none;border-top:none}
   canvas{display:block;width:100%;height:auto;border-radius:6px;background:#060b11}
-  .controls{display:flex;flex-wrap:wrap;gap:18px;margin-top:16px;align-items:flex-end}
+  .controls{display:flex;flex-wrap:wrap;gap:14px 18px;margin:2px 0 14px;align-items:flex-end}
   .ctl{display:flex;flex-direction:column;gap:7px}
   .ctl > label{font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--dim)}
   .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
@@ -74,8 +74,6 @@
   </header>
 
   <div class="panel">
-    <canvas id="scope" width="1040" height="788" aria-label="Dual-core inner ISR vs outer RTOS loop timing"></canvas>
-
     <div class="controls">
       <div class="ctl">
         <label>Topology</label>
@@ -132,6 +130,8 @@
       <button class="btn kick" id="kick">⚡ Load step</button>
       <button class="btn" id="play">⏸ Pause</button>
     </div>
+
+    <canvas id="scope" width="1040" height="660" aria-label="Dual-core inner ISR vs outer RTOS loop timing"></canvas>
 
     <div class="legend">
       <span><i style="background:var(--amber)"></i>Iref — command from outer loop</span>
@@ -321,10 +321,10 @@ function tx(t){ // time → x, scrolling window [vtime-Wus, vtime]
   return PADL + (t - t0)/cfg.Wus * (W-PADL-PADR);
 }
 const bands = {
-  core:  { y: 14,  h: 196 },
-  mbox:  { y: 226, h: 92  },
-  scope: { y: 334, h: 322 },
-  meta:  { y: 672, h: 104 }
+  core:  { y: 12,  h: 150 },
+  mbox:  { y: 170, h: 84  },
+  scope: { y: 262, h: 288 },
+  meta:  { y: 558, h: 96  }
 };
 
 function panel(x,y,w,h,label,accent){
@@ -354,9 +354,9 @@ function drawCore(){
 
   // lane geometry
   const twoCore = state.mode==='two';
-  const laneH = 30;
-  const innerY = b.y + (twoCore ? 52 : 86);
-  const outerY = b.y + (twoCore ? 118 : 86);
+  const laneH = 26;
+  const innerY = b.y + (twoCore ? 42 : 72);
+  const outerY = b.y + (twoCore ? 96 : 72);
 
   // lane labels
   X.font='9.5px '+FONT;
@@ -413,7 +413,7 @@ function drawMbox(){
   const b = bands.mbox, x=10, w=W-20;
   panel(x, b.y, w, b.h, 'SHARED MAILBOX · double-buffered (write inactive → flip) · inner loop reads, never blocks', COL.cyan);
   const flash = (state.vtime - state.mbox.flashT) < 4;
-  const slotW=120, slotH=42, sy=b.y+34;
+  const slotW=120, slotH=40, sy=b.y+32;
   const ax = x+30, bx = x+30+slotW+26;
   function slot(px, name, val, isActive){
     X.strokeStyle = isActive ? COL.cyan : COL.line;
