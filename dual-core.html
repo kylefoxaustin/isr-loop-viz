@@ -135,8 +135,8 @@
 
     <div class="legend">
       <span><i style="background:var(--amber)"></i>Iref — command from outer loop</span>
-      <span><i style="background:var(--green)"></i>iL — inner ran (fresh)</span>
-      <span><i style="background:var(--red)"></i>iL — inner tick stalled (missed)</span>
+      <span><i style="background:var(--green)"></i>PWM gate / iL — fresh duty</span>
+      <span><i style="background:var(--red)"></i>PWM gate / iL — stale, replayed</span>
       <span><i style="background:var(--violet)"></i>outer-loop job</span>
       <span><i style="background:var(--cyan)"></i>mailbox publish</span>
     </div>
@@ -178,12 +178,17 @@ const cfg = {
   Wus: 120,            // scope window, µs
   Vbus: 60, L: 8,      // buck input rail / inductor (arb units → di/dt in A/µs)
   Vrail: 48,           // battery rail the inductor pushes into (slow → held constant here)
-  Kp: 0.030, Ki: 0.004,// inner PI gains (per inner tick)
+  Kp: 0.110, Ki: 0.004,// inner PI gains (per inner tick) — fast enough that a running
+                       // loop rejects the disturbance almost perfectly (τ≈1.1µs)
   // reference (Iref) profiles — compressed so they're legible in a µs window:
   dcCenter: 16, dcAmp: 7, dcPer: 900,   // DC charge current: gentle drift (period 900µs)
   acAmp: 26, acPer: 170,                // AC grid current: fast sinusoid (period 170µs)
   jitterUs: 0.9,       // outer-loop scheduling jitter (RTOS preemption), ±µs
-  kickV: 11, kickTau: 26, // load step = rail sag the inner loop must reject (V, decay µs)
+  // continuous disturbance the inner loop must ALWAYS reject (input ripple, load
+  // wander, switching noise — a real converter is never quiet). 2 cores reject it
+  // every µs; 1 core can't during its blind windows → that's where it shows.
+  distAmp: 5.2, distP1: 24, distP2: 11,
+  kickV: 11, kickTau: 26, // load step = extra big rail sag transient (V, decay µs)
   slewMax: 0.55,       // inner-synth DC: max Iref slew the inner loop interpolates, A/µs
   ripK: 0.5,           // switching-ripple scale on iL (triangle, ∝ Vrail·(1-d)/L)
   Imin: -34, Imax: 42  // scope current range
@@ -212,9 +217,10 @@ function refTrue(t){
   if(state.plant === 'ac') return cfg.acAmp * Math.sin(2*Math.PI*t/cfg.acPer);
   return cfg.dcCenter + cfg.dcAmp*Math.sin(2*Math.PI*t/cfg.dcPer);
 }
-// ---- load step = a transient sag on the rail the inner loop must reject ----
+// ---- the rail the loop pushes into: a continuous disturbance + optional kick ----
 function vrailAt(t){
-  let v = cfg.Vrail;
+  let v = cfg.Vrail
+        + cfg.distAmp*(Math.sin(2*Math.PI*t/cfg.distP1) + 0.55*Math.sin(2*Math.PI*t/cfg.distP2));
   if(t >= state.kickT) v -= state.kickAmp*Math.exp(-(t-state.kickT)/cfg.kickTau);
   return v;
 }
@@ -295,7 +301,7 @@ function innerTick(tk){
   }
   // switching ripple texture (triangle pk amplitude ∝ Vrail·(1−d)/L)
   state.lastRip = cfg.ripK * Math.abs(cfg.Vrail*(1-state.duty))/cfg.L;
-  state.innerHist.push({ t: tk+1, iL: state.iL, iref: irefCmd, irefTrue: refTrue(tk+1), missed, rip: state.lastRip });
+  state.innerHist.push({ t: tk+1, iL: state.iL, iref: irefCmd, irefTrue: refTrue(tk+1), missed, rip: state.lastRip, duty: state.duty });
   const cut = state.vtime - cfg.Wus - 6;
   while(state.innerHist.length && state.innerHist[0].t < cut) state.innerHist.shift();
 }
@@ -360,7 +366,7 @@ function drawCore(){
 
   // lane labels
   X.font='9.5px '+FONT;
-  X.fillStyle=COL.green; X.fillText('INNER CORE · bare-metal · 1 µs ISR', x+12, innerY-8);
+  X.fillStyle=COL.green; X.fillText('INNER CORE · 1 µs ISR → PWM gate (width = duty)', x+12, innerY-8);
   X.fillStyle=COL.violet; X.fillText(twoCore ? 'OUTER CORE · RTOS task' : '(same core)', x+12, outerY+laneH+16);
 
   // lane baselines
@@ -369,20 +375,22 @@ function drawCore(){
   lane(innerY);
   if(twoCore) lane(outerY);
 
-  // inner ticks — small marks every 1 µs; red if missed (only happens 1-core)
-  const t0 = state.vtime - cfg.Wus;
-  for(let t=Math.max(0,Math.ceil(t0)); t<=state.vtime; t++){
-    const px = tx(t);
-    if(px < PADL-1) continue;
-    // find if this tick was missed
-    const rec = state.innerHist.find(r=>r.t===t+1);
-    const missed = rec ? rec.missed : false;
-    X.strokeStyle = missed ? COL.red : COL.green;
-    X.globalAlpha = missed ? 1 : 0.85;
-    X.lineWidth = missed ? 2 : 1.4;
-    const yc = innerY + laneH/2;
-    X.beginPath(); X.moveTo(px, yc-7); X.lineTo(px, yc+7); X.stroke();
-    X.globalAlpha=1;
+  // inner-core lane = the PWM GATE the ISR emits. Each 1 µs period is a pulse
+  // whose width is the duty just computed. Green = fresh duty (ISR ran this
+  // period); red = stale duty the hardware replays while the ISR was blind. Same
+  // "fresh vs stale actuation" the ISR-period viz shows — here the staleness is
+  // the outer loop stealing the core, not a slow tick.
+  const gTop = innerY+2, gBot = innerY+laneH-2;
+  X.strokeStyle=COL.line; X.lineWidth=1; X.beginPath();
+  X.moveTo(PADL, gBot); X.lineTo(W-PADR, gBot); X.stroke();
+  for(const r of state.innerHist){
+    const t = r.t-1;                       // period [t, t+1)
+    const xL = tx(t), xR = tx(t+1);
+    if(xR < PADL || xL > W-PADR) continue;
+    const pw = (xR-xL)*Math.max(0.06, Math.min(0.94, r.duty||0.8));
+    const x0 = Math.max(PADL, xL);
+    X.fillStyle = r.missed ? 'rgba(255,93,108,0.85)' : 'rgba(70,224,138,0.80)';
+    X.fillRect(x0, gTop, Math.max(1, Math.min(pw, (W-PADR)-x0)), gBot-gTop);
   }
 
   // outer jobs — violet blocks. In 1-core they sit ON the shared lane (and the
@@ -500,8 +508,20 @@ function rms(){
   let s=0; hist.forEach(r=> s += (r.iL-r.irefTrue)**2);
   return Math.sqrt(s/hist.length);
 }
+function peakErr(){
+  // worst-case current excursion off the command — the real regulation spec.
+  // 2-core: just baseline ripple. 1-core: the blind-window spikes show here.
+  const hist = state.innerHist.filter(r=>r.t>=state.vtime-cfg.Wus);
+  let p=0; hist.forEach(r=> p=Math.max(p, Math.abs(r.iL-r.irefTrue)));
+  return p;
+}
 function missedCount(){
   return state.innerHist.filter(r=>r.t>=state.vtime-cfg.Wus && r.missed).length;
+}
+function stalePwmPct(){
+  const h = state.innerHist.filter(r=>r.t>=state.vtime-cfg.Wus);
+  if(!h.length) return 0;
+  return 100*h.filter(r=>r.missed).length/h.length;
 }
 function worstGap(){
   // largest spacing between executed (non-missed) inner ticks → effective jitter
@@ -522,14 +542,14 @@ function chip(x,y,w,h,label,val,unit,color,sub){
 
 function drawMeta(){
   const b=bands.meta, x=10, w=W-20;
-  const miss=missedCount(), jit=worstGap(), err=rms();
+  const stale=stalePwmPct(), jit=worstGap(), err=peakErr();
   const twoCore = state.mode==='two';
   const cw=(w-10*4)/5, ch=b.h-30, cy=b.y+24;
   let cx=x+0;
-  chip(cx,cy,cw,ch,'MISSED DEADLINES', String(miss), 'ticks', miss>0?COL.red:COL.green, twoCore?'inner never blocks':'outer stole the core'); cx+=cw+10;
+  chip(cx,cy,cw,ch,'STALE PWM', stale.toFixed(0), '%', stale>0?COL.red:COL.green, stale>0?'gate replays old duty':'every pulse fresh'); cx+=cw+10;
   chip(cx,cy,cw,ch,'INNER JITTER', jit.toFixed(0), 'µs', jit>0?COL.red:COL.green, jit>0?'period ballooned':'rock-solid 1 µs'); cx+=cw+10;
   chip(cx,cy,cw,ch,'Iref STALENESS', (state.vtime-state.mbox.publishedAt).toFixed(0), 'µs', COL.amber, 'last publish age'); cx+=cw+10;
-  chip(cx,cy,cw,ch,'TRACK ERROR', err.toFixed(1), 'A rms', err>4?COL.red:(err>1.6?COL.amber:COL.green), 'iL vs true ref'); cx+=cw+10;
+  chip(cx,cy,cw,ch,'CURRENT EXCURSION', err.toFixed(1), 'A pk', err>3.8?COL.red:(err>2.6?COL.amber:COL.green), err>3.8?'DEGRADED regulation':(err>2.6?'marginal':'REGULATED')); cx+=cw+10;
   chip(cx,cy,cw,ch,'CYCLE RATIO', '1:'+state.N, '', COL.cyan, state.plant==='ac'?'AC grid current':'DC charge');
 
   // verdict banner across the top of the meta band
@@ -540,8 +560,8 @@ function drawMeta(){
   const synthNote = state.synth==='inner' ? '   ·   inner synthesizes waveform → staleness ≈ 0'
                                           : '   ·   outer paints waveform → Iref staircases at 1:'+state.N;
   X.fillText((twoCore
-    ? 'TWO CORES — outer load runs in parallel; inner ISR isolated → trades stall for cheap staleness'
-    : 'ONE CORE — outer job steals '+state.load+'+ inner ticks every '+state.N+' → 1 µs deadline blown')
+    ? 'TWO CORES — inner ISR never blinks, PWM always fresh → regulation holds while the outer load runs in parallel'
+    : 'ONE CORE — gate replays stale duty ~'+state.load+' µs every '+state.N+' → disturbance slips through, regulation DEGRADED')
     + synthNote, W/2, b.y+13);
   X.textAlign='left';
 }
