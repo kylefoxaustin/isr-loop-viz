@@ -131,7 +131,7 @@
       <button class="btn" id="play">⏸ Pause</button>
     </div>
 
-    <canvas id="scope" width="1040" height="660" aria-label="Dual-core inner ISR vs outer RTOS loop timing"></canvas>
+    <canvas id="scope" width="1040" height="732" aria-label="Dual-core inner ISR vs outer RTOS loop timing"></canvas>
 
     <div class="legend">
       <span><i style="background:var(--amber)"></i>Iref — command from outer loop</span>
@@ -189,6 +189,10 @@ const cfg = {
   // every µs; 1 core can't during its blind windows → that's where it shows.
   distAmp: 5.2, distP1: 24, distP2: 11,
   kickV: 11, kickTau: 26, // load step = extra big rail sag transient (V, decay µs)
+  // battery / power-stage thermal amplifier (teaching values, not a datasheet):
+  // ripple current → I²·ESR heat → cell temp (with real-time lag) → aging.
+  esr: 0.06, rTh: 13, ambient: 25, battTauReal: 1.6,
+  ageTref: 25, ageDoubleC: 9, // aging roughly doubles per ~9 °C over ambient
   slewMax: 0.55,       // inner-synth DC: max Iref slew the inner loop interpolates, A/µs
   ripK: 0.5,           // switching-ripple scale on iL (triangle, ∝ Vrail·(1-d)/L)
   Imin: -34, Imax: 42  // scope current range
@@ -202,6 +206,7 @@ const state = {
   // inner controller state
   iL: cfg.dcCenter, duty: cfg.Vrail/cfg.Vbus, integ: 0,
   irefSlew: cfg.dcCenter, lastIref: cfg.dcCenter, lastRip: 0,
+  battTempC: cfg.ambient,     // cell temp — has thermal mass, lags ripple by ~seconds
   // double-buffered mailbox: outer writes the inactive slot then flips `active`.
   // `val` is whatever number crossed the bus — an instantaneous Iref (outer paints)
   // or a slow envelope amplitude / setpoint (inner synthesizes).
@@ -330,7 +335,8 @@ const bands = {
   core:  { y: 12,  h: 150 },
   mbox:  { y: 170, h: 84  },
   scope: { y: 262, h: 288 },
-  meta:  { y: 558, h: 96  }
+  batt:  { y: 558, h: 64  },
+  meta:  { y: 630, h: 96  }
 };
 
 function panel(x,y,w,h,label,accent){
@@ -540,6 +546,49 @@ function chip(x,y,w,h,label,val,unit,color,sub){
   if(sub){ X.fillStyle=COL.dim; X.font='8.5px '+FONT; X.fillText(sub, x+9, y+h-8); }
 }
 
+function flowArrow(ax,ay){
+  X.strokeStyle=COL.dim; X.lineWidth=1.4;
+  X.beginPath(); X.moveTo(ax,ay); X.lineTo(ax+20,ay); X.stroke();
+  X.beginPath(); X.moveTo(ax+20,ay); X.lineTo(ax+14,ay-4); X.lineTo(ax+14,ay+4); X.closePath();
+  X.fillStyle=COL.dim; X.fill();
+}
+function battGlyph(gx,gy,gw,gh,color){
+  const bw=gw-6;
+  X.globalAlpha=0.30; X.fillStyle=color; X.fillRect(gx+2,gy+2,bw-4,gh-4); X.globalAlpha=1;
+  X.strokeStyle=color; X.lineWidth=2; X.strokeRect(gx,gy,bw,gh);
+  X.fillStyle=color; X.fillRect(gx+bw,gy+gh*0.3,5,gh*0.4);     // terminal nub
+  X.strokeStyle=color; X.globalAlpha=0.4; X.lineWidth=1;
+  for(let i=1;i<3;i++){ const dx=gx+bw*i/3; X.beginPath(); X.moveTo(dx,gy+3); X.lineTo(dx,gy+gh-3); X.stroke(); }
+  X.globalAlpha=1;
+}
+function drawBattery(){
+  const b=bands.batt, x=10, w=W-20;
+  panel(x, b.y, w, b.h, 'BATTERY / POWER STAGE · ripple current → I²·ESR heat → cell temp → aging', COL.amber);
+  const Irip=peakErr(), lossW=Irip*Irip*cfg.esr, T=state.battTempC;
+  const aging=Math.pow(2,(T-cfg.ageTref)/cfg.ageDoubleC);
+  const status = T>42?'HOT':(T>31?'WARM':'COOL');
+  const sc = T>42?COL.red:(T>31?COL.amber:COL.green);
+  const lab=b.y+27, val=b.y+47;
+  X.textAlign='left';
+  // ripple current (input)
+  X.font='9px '+FONT; X.fillStyle=COL.dim; X.fillText('RIPPLE CURRENT pk', x+16, lab);
+  X.font='700 17px '+FONT; X.fillStyle=COL.cyan; X.fillText(Irip.toFixed(1)+' A', x+16, val);
+  flowArrow(x+128, b.y+40);
+  // I²·ESR heat
+  X.font='9px '+FONT; X.fillStyle=COL.dim; X.fillText('I²·ESR HEAT', x+162, lab);
+  X.font='700 17px '+FONT; X.fillStyle=sc; X.fillText(lossW.toFixed(2)+' W', x+162, val);
+  flowArrow(x+262, b.y+40);
+  // battery glyph + temp
+  battGlyph(x+300, b.y+16, 132, 34, sc);
+  X.font='700 19px '+FONT; X.fillStyle=sc; X.fillText(T.toFixed(0)+'°C', x+444, b.y+38);
+  X.font='9px '+FONT; X.fillStyle=COL.dim; X.fillText(status, x+444, b.y+52);
+  flowArrow(x+520, b.y+40);
+  // aging (output)
+  X.textAlign='right'; X.font='9px '+FONT; X.fillStyle=COL.dim; X.fillText('AGING RATE', x+w-16, lab);
+  X.font='700 19px '+FONT; X.fillStyle=sc; X.fillText(aging.toFixed(1)+'×', x+w-16, val);
+  X.font='8.5px '+FONT; X.fillStyle=COL.dim; X.fillText('vs a cool pack', x+w-16, b.y+58);
+  X.textAlign='left';
+}
 function drawMeta(){
   const b=bands.meta, x=10, w=W-20;
   const stale=stalePwmPct(), jit=worstGap(), err=peakErr();
@@ -572,6 +621,13 @@ function frame(now){
     let dt=(now-state.lastReal)/1000; state.lastReal=now;
     dt=Math.min(dt,0.05);
     advance(dt*state.speed);
+    // thermal amplifier: peak ripple current (the regulation excursion) heats the
+    // pack via I²·ESR, with real-time lag so flipping 1↔2 cores visibly warms /
+    // cools it over a couple of seconds. Peak, not RMS: the brief blind-window
+    // spikes are what cook the cell's hot-spots — and what RMS would hide.
+    const lossW = peakErr()**2 * cfg.esr;
+    const tgt = cfg.ambient + lossW*cfg.rTh;
+    state.battTempC += (tgt - state.battTempC)*(1 - Math.exp(-dt/cfg.battTauReal));
   } else { state.lastReal=now; }
 
   X.clearRect(0,0,W,H);
@@ -579,6 +635,7 @@ function frame(now){
   drawCore();
   drawMbox();
   drawScope();
+  drawBattery();
   drawMeta();
   requestAnimationFrame(frame);
 }
@@ -627,6 +684,7 @@ function syncSeg(id, attr, val){
 syncSeg('mode','mode',state.mode); syncSeg('plant','plant',state.plant); syncSeg('synth','synth',state.synth);
 syncSeg('rate','n',state.N); syncSeg('load','load',state.load); syncSeg('speed','speed',state.speed);
 if(state.plant==='ac'){ state.iL=0; state.irefSlew=0; state.lastIref=0; }
+if(Q.get('tau')) cfg.battTauReal=+Q.get('tau');   // thermal lag override (demos/verify)
 status();
 requestAnimationFrame(frame);
 })();
