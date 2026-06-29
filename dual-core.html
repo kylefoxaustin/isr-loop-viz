@@ -70,7 +70,7 @@
       <h1>dual <span>core</span></h1>
       <div class="sub">One fat core runs the inner 1&nbsp;µs current loop <em>and</em> the outer RTOS loop today — and it works. Split them across two cores and the worry is: <b style="color:var(--red)">won't the outer loop stall the inner one?</b> Watch the answer: on one core the outer load <b style="color:var(--red)">steals inner ticks</b>; on two it only costs a little <b style="color:var(--green)">staleness</b> — never a missed 1&nbsp;µs deadline.</div>
     </div>
-    <div class="nav">◂ <a href="index.html">isr loop</a> (single-core sampling)</div>
+    <div class="nav">◂ <a href="index.html">isr loop</a> (single-core sampling)<br><a href="wake-wall.html">wake wall</a> (low-power M7 → suspended SoC) ▸</div>
   </header>
 
   <div class="panel">

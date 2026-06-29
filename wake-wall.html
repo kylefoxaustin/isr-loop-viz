@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wake Wall // low-power M7 → suspended SoC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Major+Mono+Display&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#070d14; --panel:#0c1622;
+    --grid:rgba(53,208,255,0.07); --grid-strong:rgba(53,208,255,0.14);
+    --ink:#cfe3f2; --dim:#5d7a93;
+    --cyan:#35d0ff; --amber:#ffb23e; --green:#46e08a; --red:#ff5d6c; --violet:#c77dff;
+    --line:rgba(53,208,255,0.18);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
+  body{padding:22px 18px 40px;display:flex;flex-direction:column;align-items:center;
+    background-image:
+      linear-gradient(var(--grid) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px;min-height:100vh}
+  .wrap{width:100%;max-width:1080px}
+  header{display:flex;justify-content:space-between;align-items:flex-end;
+    gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:18px}
+  h1{font-family:"Major Mono Display",monospace;font-weight:400;
+    font-size:clamp(20px,3.2vw,32px);margin:0;color:var(--cyan);letter-spacing:1px;line-height:1.05}
+  h1 span{color:var(--amber)}
+  .sub{color:var(--dim);font-size:12.5px;max-width:640px;line-height:1.5;margin-top:6px}
+  .nav{font-size:11.5px;color:var(--dim);white-space:nowrap;text-align:right;line-height:1.8}
+  .nav a{color:var(--cyan);text-decoration:none;border-bottom:1px dotted var(--line)}
+  .nav a:hover{color:var(--amber)}
+  .panel{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .panel::before,.panel::after{content:"";position:absolute;width:12px;height:12px;border:1.5px solid var(--cyan);opacity:.55}
+  .panel::before{top:-1px;left:-1px;border-right:none;border-bottom:none}
+  .panel::after{bottom:-1px;right:-1px;border-left:none;border-top:none}
+  canvas{display:block;width:100%;height:auto;border-radius:6px;background:#060b11}
+  .controls{display:flex;flex-wrap:wrap;gap:14px 18px;margin:2px 0 14px;align-items:flex-end}
+  .ctl{display:flex;flex-direction:column;gap:7px}
+  .ctl > label{font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--dim)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg button{background:transparent;border:none;color:var(--dim);font-family:inherit;font-size:13px;
+    padding:8px 12px;cursor:pointer;border-right:1px solid var(--line);transition:all .12s}
+  .seg button:last-child{border-right:none}
+  .seg button:hover{color:var(--ink);background:rgba(53,208,255,.06)}
+  .seg button[aria-pressed="true"]{background:var(--cyan);color:#03121b;font-weight:700}
+  .seg.amber button[aria-pressed="true"]{background:var(--amber);color:#1a1304}
+  .seg.red button[aria-pressed="true"]{background:var(--red);color:#1a0509}
+  .seg.green button[aria-pressed="true"]{background:var(--green);color:#04190e}
+  .btn{background:transparent;border:1px solid var(--line);color:var(--ink);font-family:inherit;font-size:13px;
+    padding:9px 15px;border-radius:7px;cursor:pointer;transition:all .12s}
+  .btn:hover{border-color:var(--cyan);color:var(--cyan)}
+  .btn.kick:hover{border-color:var(--amber);color:var(--amber)}
+  .btn.rec:hover{border-color:var(--green);color:var(--green)}
+  button:focus-visible,.seg button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+  .spacer{flex:1}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11px;color:var(--dim);margin-top:12px}
+  .legend i{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  .status{font-size:11.5px;color:var(--dim);min-height:16px;margin-top:10px;line-height:1.5}
+  .status b{color:var(--green)}
+  footer{color:var(--dim);font-size:11px;margin-top:26px;text-align:center;line-height:1.7}
+  footer b{color:var(--amber)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>wake <span>wall</span></h1>
+      <div class="sub">The low-power <b style="color:var(--cyan)">M7</b> beats every few <b style="color:var(--cyan)">µs</b> and kicks data upstairs. But the outer-loop M7s live in the rest of the SoC — and if it's <b style="color:var(--red)">suspended</b> it needs <b style="color:var(--red)">10&nbsp;ms</b> to reach its first instruction. Watch the beat rate become <b>irrelevant</b> behind that wall — then flip the SoC to <b style="color:var(--green)">idle</b> and watch it matter again.</div>
+    </div>
+    <div class="nav">◂ <a href="index.html">isr loop</a><br><a href="dual-core.html">dual core</a> ▸</div>
+  </header>
+
+  <div class="panel">
+    <div class="controls">
+      <div class="ctl">
+        <label>Rest-of-SoC power state</label>
+        <div class="seg red" id="mode" role="group" aria-label="Rest of SoC power state">
+          <button data-mode="suspend" aria-pressed="true">suspend · 10 ms</button>
+          <button data-mode="idle" aria-pressed="false">idle · ~0</button>
+        </div>
+      </div>
+
+      <div class="ctl">
+        <label>LP M7 beat · T<sub>beat</sub></label>
+        <div class="seg" id="beat" role="group" aria-label="Low-power M7 beat period">
+          <button data-x="1"   aria-pressed="false">1 µs</button>
+          <button data-x="5"   aria-pressed="false">5 µs</button>
+          <button data-x="10"  aria-pressed="false">10 µs</button>
+          <button data-x="20"  aria-pressed="true">20 µs</button>
+          <button data-x="50"  aria-pressed="false">50 µs</button>
+          <button data-x="100" aria-pressed="false">100 µs</button>
+        </div>
+      </div>
+
+      <div class="ctl">
+        <label>Events arrive</label>
+        <div class="seg amber" id="rate" role="group" aria-label="Event arrival rate (for the energy model)">
+          <button data-g="1000"    aria-pressed="false">every 1 ms</button>
+          <button data-g="10000"   aria-pressed="true">10 ms</button>
+          <button data-g="100000"  aria-pressed="false">100 ms</button>
+          <button data-g="1000000" aria-pressed="false">1 s</button>
+        </div>
+      </div>
+
+      <div class="ctl">
+        <label>Hold-off then sleep</label>
+        <div class="seg" id="hold" role="group" aria-label="Stay-awake window after processing">
+          <button data-h="200"  aria-pressed="true">short</button>
+          <button data-h="2000" aria-pressed="false">long</button>
+        </div>
+      </div>
+
+      <div class="ctl">
+        <label>Slow-mo</label>
+        <div class="seg" id="speed" role="group" aria-label="Simulation speed">
+          <button data-speed="8000"  aria-pressed="false">0.4×</button>
+          <button data-speed="20000" aria-pressed="true">1×</button>
+          <button data-speed="60000" aria-pressed="false">3×</button>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <button class="btn kick" id="kick">⚡ Inject event</button>
+      <button class="btn rec" id="rec">● Record 3s GIF</button>
+      <button class="btn" id="play">⏸ Pause</button>
+    </div>
+
+    <canvas id="scope" width="1040" height="728" aria-label="Low-power M7 to suspended SoC wake-latency visualizer"></canvas>
+
+    <div class="legend">
+      <span><i style="background:var(--cyan)"></i>LP M7 beat / mailbox</span>
+      <span><i style="background:var(--amber)"></i>wake sequence (10 ms wall)</span>
+      <span><i style="background:var(--green)"></i>idle grab / fresh</span>
+      <span><i style="background:var(--violet)"></i>outer M7 processing</span>
+      <span><i style="background:var(--red)"></i>blind window / FIFO overflow</span>
+    </div>
+    <div class="status" id="status">Ready.</div>
+  </div>
+
+  <footer>
+    Self-contained — no build, no server. The lesson: <b>a fast inner loop can't outrun a slow wake-up</b> — the SoC power state decides whether 10 ms or one cycle gates your response.<br>
+    Built with Claude · kylefoxaustin · <b>TTA</b>
+  </footer>
+</div>
+
+<script src="vendor/gif.js"></script>
+<script>
+(function(){
+"use strict";
+const C = document.getElementById('scope');
+const X = C.getContext('2d');
+const W = C.width, H = C.height;
+const DPR = Math.min(2, window.devicePixelRatio||1);
+C.width = W*DPR; C.height = H*DPR; C.style.aspectRatio = W+"/"+H;
+X.scale(DPR,DPR);
+
+const COL = {
+  bg:'#060b11', panel:'#0c1622', ink:'#cfe3f2', dim:'#5d7a93',
+  cyan:'#35d0ff', amber:'#ffb23e', green:'#46e08a', red:'#ff5d6c', violet:'#c77dff',
+  grid:'rgba(53,208,255,0.06)', line:'rgba(53,208,255,0.20)'
+};
+const FONT = '"JetBrains Mono", ui-monospace, monospace';
+
+// ---------------------------------------------------------------------------
+// The honest model (teaching values, not a datasheet).
+//
+// Two domains. The PCS domain (high-perf ISR cores + the low-power M7) is ALWAYS
+// on. The M7 @ 800 MHz beats every T_beat µs: ADC sample + keep-alive PWM. When
+// something interesting appears it catches it on its NEXT beat and kicks a small
+// payload upstairs (doorbell → mailbox FIFO).
+//
+// The rest-of-SoC (where the outer-loop M7s live) responds in one of two states:
+//   SUSPEND → 10 ms wake WALL before the first instruction executes (PLL relock,
+//             voltage ramp, clock tree, cache/TCM restore, first word).
+//   IDLE    → clocked + retained, grabs the payload in ~cycle time (~0).
+// Either way: process the small payload, hold off a window, then sleep again.
+//
+// End-to-end latency = capture(≤T_beat) + response(10 ms | ~0) + process(small).
+// In SUSPEND the 10 ms term buries T_beat (10 000× bigger). In IDLE, capture IS
+// the latency — so the beat rate suddenly matters, exactly like the ISR viz.
+// ---------------------------------------------------------------------------
+const cfg = {
+  wakeUs: 10000,        // SUSPEND wake to first-word = 10 ms
+  idleRespUs: 0.02,     // IDLE response ≈ a couple of 800 MHz cycles
+  processUs: 8,         // "process something small"
+  fifoDepth: 256,       // mailbox FIFO entries before overflow / data loss
+  lpMHz: 800,
+  // wake-sequence phases (fractions of wakeUs) — what the 10 ms is actually spent on
+  phases: [
+    {name:'PLL relock', f:0.30, c:COL.amber},
+    {name:'V-rail ramp', f:0.22, c:'#ff9a3e'},
+    {name:'clock tree',  f:0.16, c:COL.amber},
+    {name:'cache/TCM',   f:0.24, c:'#ff7e4e'},
+    {name:'first word',  f:0.08, c:COL.green}
+  ],
+  // power model (mW) — rest-of-SoC + LP M7
+  pSuspend: 0.05,       // rest-of-SoC suspended (retention only)
+  pIdle: 14,            // rest-of-SoC idle (clocked, ready)
+  pActive: 340,         // rest-of-SoC active (waking + processing)
+  pLpBase: 5,           // LP M7 floor
+  pLpBeat: 40,          // LP M7 per-beat term: pLpBase + pLpBeat/T_beat (mW)
+  visualGapUs: 1300     // on-screen pause between demo events (pacing only)
+};
+
+const Q = new URLSearchParams(location.search);
+const state = {
+  mode: Q.get('mode')||'suspend',
+  x: +(Q.get('x')||20),          // T_beat, µs
+  g: +(Q.get('g')||10000),       // modeled event gap, µs (energy only)
+  hold: +(Q.get('h')||200),      // hold-off, µs
+  speed: +(Q.get('speed')||20000),
+  playing: true,
+  vtime: 0, lastReal: 0,
+  ev: null,                      // current event lifecycle (see fireEvent)
+  nextFire: 50,                  // when to spawn the next demo event
+  lostSamples: 0,
+  flashKick: -1e9
+};
+
+// ---- spawn an event at virtual time t and compute its whole lifecycle ----
+function fireEvent(t){
+  const X0 = state.x;
+  const tCap = Math.ceil((t/X0) - 1e-9)*X0;      // next LP-M7 beat samples it
+  const capActual = (tCap===t) ? X0 : tCap - t;   // this event's blind window
+  const resp = state.mode==='suspend' ? cfg.wakeUs : cfg.idleRespUs;
+  const tFirst = tCap + resp;                     // first word executes
+  const tDone  = tFirst + cfg.processUs;          // payload processed → delivered
+  const tSleep = tDone + state.hold;              // hold-off, then back to sleep
+  state.ev = { t, tCap, tFirst, tDone, tSleep, resp, capActual };
+  state.flashKick = -1e9;
+}
+
+// ---- where is the in-flight event right now? ----
+function evPhase(){
+  const e = state.ev; if(!e) return 'none';
+  const t = state.vtime;
+  if(t < e.tCap)   return 'blind';     // appeared, waiting for the next beat
+  if(t < e.tFirst) return state.mode==='suspend' ? 'waking' : 'grab';
+  if(t < e.tDone)  return 'process';
+  if(t < e.tSleep) return 'holdoff';
+  return 'sleep';
+}
+// peak FIFO depth this event will reach (beats landing during the wake)
+function beatsDuringWake(){ return Math.round(state.ev ? state.ev.resp/state.x : 0); }
+function fifoNow(){
+  const e=state.ev; if(!e) return 0;
+  const t=Math.min(state.vtime, e.tFirst);
+  if(t<=e.tCap) return 0;
+  return Math.floor((t - e.tCap)/state.x);        // beats accumulated since the kick
+}
+
+function advance(dtv){
+  state.vtime += dtv;
+  // fire the next demo event when due
+  if(!state.ev && state.vtime >= state.nextFire) fireEvent(state.nextFire);
+  if(state.ev){
+    // when this event's hold-off expires, count any FIFO overflow & schedule next
+    if(state.vtime >= state.ev.tSleep){
+      const peak = beatsDuringWake();
+      if(peak > cfg.fifoDepth) state.lostSamples += (peak - cfg.fifoDepth);
+      state.nextFire = state.ev.tSleep + cfg.visualGapUs;
+      state.ev = null;
+    }
+  }
+  // skip dead air: if we're idling far from the next event, jump close to it
+  if(!state.ev && state.nextFire - state.vtime > cfg.visualGapUs)
+    state.vtime = state.nextFire - cfg.visualGapUs;
+}
+
+// ===========================================================================
+//  derived numbers (latency + energy)
+// ===========================================================================
+function captureWorst(){ return state.x; }                 // worst-case blind window
+function respUs(m){ return (m||state.mode)==='suspend' ? cfg.wakeUs : cfg.idleRespUs; }
+function endToEnd(m){ return captureWorst() + respUs(m) + cfg.processUs; }
+function pLp(){ return cfg.pLpBase + cfg.pLpBeat/state.x; } // LP M7 power, mW
+// rest-of-SoC average power at the modeled event gap g
+function socAvg(m){
+  m = m||state.mode;
+  const active = respUs(m) + cfg.processUs + state.hold;    // µs awake per event
+  const duty = Math.min(1, active/state.g);
+  const floor = m==='suspend' ? cfg.pSuspend : cfg.pIdle;
+  return cfg.pActive*duty + floor*(1-duty);
+}
+// energy the rest-of-SoC spends per event (µJ): mW·µs = nJ → /1000
+function energyPerEvent(m){
+  m = m||state.mode;
+  return cfg.pActive*(respUs(m)+cfg.processUs+state.hold)/1000;
+}
+// breakeven event gap: above it SUSPEND saves power, below it IDLE wins (µs)
+function breakevenGap(){
+  return cfg.pActive*cfg.wakeUs/(cfg.pIdle-cfg.pSuspend);
+}
+function fmtUs(v){
+  if(v>=1000) return (v/1000).toFixed(v>=10000?1:2)+' ms';
+  if(v>=1)    return v.toFixed(v<10?1:0)+' µs';
+  return (v*1000).toFixed(0)+' ns';
+}
+
+// ===========================================================================
+//  RENDER
+// ===========================================================================
+const bands = {
+  topo:  { y: 10,  h: 148 },
+  time:  { y: 166, h: 168 },
+  back:  { y: 342, h: 116 },
+  enrg:  { y: 466, h: 96  },
+  meta:  { y: 570, h: 158 }
+};
+function panel(x,y,w,h,label,accent){
+  X.save();
+  X.fillStyle = COL.panel; X.strokeStyle = COL.line; X.lineWidth = 1;
+  X.beginPath(); X.rect(x,y,w,h); X.fill(); X.stroke();
+  X.strokeStyle = accent||COL.cyan; X.globalAlpha=.6; X.lineWidth=1.5;
+  const c=9;
+  X.beginPath(); X.moveTo(x,y+c);X.lineTo(x,y);X.lineTo(x+c,y);
+  X.moveTo(x+w-c,y+h);X.lineTo(x+w,y+h);X.lineTo(x+w,y+h-c); X.stroke();
+  X.globalAlpha=1;
+  if(label){ X.fillStyle=COL.dim; X.font='10px '+FONT; X.textAlign='left';
+    X.fillText(label, x+10, y+15); }
+  X.restore();
+}
+
+// ---- band 1: floorplan / topology -----------------------------------------
+function drawTopo(){
+  const b=bands.topo, x=10, w=W-20;
+  panel(x, b.y, w, b.h, null, COL.cyan);
+  X.save();
+  X.textAlign='left'; X.font='10px '+FONT; X.fillStyle=COL.dim;
+  X.fillText('SoC FLOORPLAN · the kick travels from an always-on µs loop to a domain that may be fast asleep', x+12, b.y+15);
+
+  // PCS domain box (left) — always on
+  const pcsX=x+18, pcsW=360, pcsY=b.y+30, pcsH=b.h-46;
+  X.strokeStyle=COL.cyan; X.globalAlpha=.5; X.lineWidth=1.2;
+  X.strokeRect(pcsX,pcsY,pcsW,pcsH); X.globalAlpha=1;
+  X.fillStyle=COL.cyan; X.font='9px '+FONT; X.fillText('PCS DOMAIN · always-on · low power', pcsX+8, pcsY+14);
+
+  // ISR cores (context) + LP M7
+  X.fillStyle='rgba(53,208,255,0.05)'; X.strokeStyle=COL.line; X.lineWidth=1;
+  X.beginPath(); X.rect(pcsX+10, pcsY+24, 150, 30); X.fill(); X.stroke();
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='center';
+  X.fillText('ISR cores · 1 µs loop', pcsX+85, pcsY+43);
+
+  // LP M7 — beating
+  const beatPhase = ((state.vtime % state.x)/state.x);
+  const beating = beatPhase < 0.18;
+  const m7c = COL.cyan;
+  X.fillStyle='rgba(53,208,255,0.10)'; X.strokeStyle=m7c; X.lineWidth=1.5;
+  X.beginPath(); X.rect(pcsX+10, pcsY+62, 150, 46); X.fill(); X.stroke();
+  X.fillStyle=m7c; X.font='700 11px '+FONT; X.textAlign='center';
+  X.fillText('LP M7 · 800 MHz', pcsX+85, pcsY+80);
+  X.fillStyle=COL.dim; X.font='8.5px '+FONT;
+  X.fillText('ADC + simple PWM', pcsX+85, pcsY+94);
+  // beat LED
+  X.fillStyle = beating ? COL.green : 'rgba(70,224,138,0.2)';
+  X.beginPath(); X.arc(pcsX+150, pcsY+70, 4, 0, 7); X.fill();
+  X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='right';
+  X.fillText('beat 1:'+state.x+' µs', pcsX+pcsW-8, pcsY+80);
+
+  // keep-alive peripherals fed by the PWM
+  X.textAlign='left'; X.fillStyle=COL.dim; X.font='8px '+FONT;
+  X.fillText('keep-alive ▸', pcsX+172, pcsY+50);
+  for(let i=0;i<3;i++){
+    const gx=pcsX+172+i*26;
+    X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(gx, pcsY+58, 18, 14);
+    X.fillStyle = beating ? 'rgba(70,224,138,0.5)' : 'rgba(53,208,255,0.15)';
+    X.fillRect(gx+2, pcsY+60, 14, 10);
+  }
+
+  // doorbell / mailbox bridge
+  const brX = pcsX+pcsW+18, brW=120;
+  const kicking = state.ev && Math.abs(state.vtime-state.ev.tCap) < state.x*1.2 && state.vtime>=state.ev.tCap-state.x;
+  X.strokeStyle = kicking?COL.amber:COL.line; X.lineWidth = kicking?2:1;
+  X.fillStyle='rgba(53,208,255,0.04)';
+  X.beginPath(); X.rect(brX, pcsY+38, brW, 40); X.fill(); X.stroke();
+  X.fillStyle = kicking?COL.amber:COL.dim; X.font='9px '+FONT; X.textAlign='center';
+  X.fillText('MAILBOX', brX+brW/2, pcsY+54);
+  X.fillText('+ doorbell', brX+brW/2, pcsY+66);
+  // arrow PCS → mailbox
+  arrow(pcsX+pcsW+2, pcsY+58, brX-2, pcsY+58, kicking?COL.amber:COL.dim);
+
+  // rest-of-SoC (right) — power-state dependent
+  const soX=brX+brW+18, soW = x+w-18 - soX, soY=pcsY, soH=pcsH;
+  const ph = evPhase();
+  let soc, glow, lab, note;
+  if(state.mode==='suspend'){
+    if(ph==='waking'){ soc=COL.amber; glow=0.16; lab='WAKING…'; note='climbing the 10 ms wall'; }
+    else if(ph==='process'||ph==='holdoff'){ soc=COL.violet; glow=0.16; lab='ACTIVE'; note='outer M7 running'; }
+    else { soc=COL.red; glow=0.04; lab='SUSPENDED'; note='Zzz · 10 ms to first word'; }
+  } else {
+    if(ph==='process'||ph==='holdoff'){ soc=COL.violet; glow=0.16; lab='ACTIVE'; note='outer M7 running'; }
+    else { soc=COL.green; glow=0.10; lab='IDLE · READY'; note='clocked · grabs in ~1 cycle'; }
+  }
+  X.fillStyle='rgba(199,125,255,'+glow+')'; X.strokeStyle=soc; X.lineWidth=1.5;
+  X.beginPath(); X.rect(soX, soY, soW, soH); X.fill(); X.stroke();
+  X.fillStyle=soc; X.font='9px '+FONT; X.textAlign='left';
+  X.fillText('REST OF SoC · outer-loop M7s', soX+8, soY+14);
+  // big state glyph
+  X.fillStyle=soc; X.font='700 17px '+FONT; X.textAlign='center';
+  X.fillText(lab, soX+soW/2, soY+58);
+  X.fillStyle=COL.dim; X.font='9px '+FONT;
+  X.fillText(note, soX+soW/2, soY+76);
+  // wake progress ring while climbing the wall
+  if(ph==='waking'){
+    const prog=Math.min(1,(state.vtime-state.ev.tCap)/state.ev.resp);
+    X.strokeStyle='rgba(255,178,62,0.25)'; X.lineWidth=3;
+    X.beginPath(); X.arc(soX+soW/2, soY+95, 12, 0, 7); X.stroke();
+    X.strokeStyle=COL.amber; X.lineWidth=3;
+    X.beginPath(); X.arc(soX+soW/2, soY+95, 12, -Math.PI/2, -Math.PI/2+prog*2*Math.PI); X.stroke();
+    X.fillStyle=COL.amber; X.font='8px '+FONT;
+    X.fillText((prog*100).toFixed(0)+'%', soX+soW/2, soY+98);
+  }
+  // arrow mailbox → SoC (wake request)
+  arrow(brX+brW+2, pcsY+58, soX-2, pcsY+58, kicking?COL.amber:COL.dim);
+  X.restore();
+}
+function arrow(x1,y1,x2,y2,c){
+  X.strokeStyle=c; X.lineWidth=1.4;
+  X.beginPath(); X.moveTo(x1,y1); X.lineTo(x2,y2); X.stroke();
+  const a=Math.atan2(y2-y1,x2-x1);
+  X.beginPath(); X.moveTo(x2,y2);
+  X.lineTo(x2-7*Math.cos(a-0.4), y2-7*Math.sin(a-0.4));
+  X.lineTo(x2-7*Math.cos(a+0.4), y2-7*Math.sin(a+0.4));
+  X.closePath(); X.fillStyle=c; X.fill();
+}
+
+// ---- band 2: latency budget (to scale) + log comparison --------------------
+function drawTimeline(){
+  const b=bands.time, x=10, w=W-20;
+  panel(x, b.y, w, b.h, null, state.mode==='suspend'?COL.red:COL.green);
+  const e = state.ev;
+  X.textAlign='left'; X.font='10px '+FONT; X.fillStyle=COL.dim;
+  X.fillText('LATENCY BUDGET · event → first word → delivered  (drawn TO SCALE — the bar rescales when you change the SoC state)', x+12, b.y+15);
+
+  const PADL=x+18, PADR=x+w-18, barY=b.y+44, barH=34;
+  // use the live event if present, else a frozen representative one
+  const cap = e ? e.capActual : captureWorst();
+  const resp = respUs();
+  const total = cap + resp + cfg.processUs;
+  const sx = v => PADL + (v/total)*(PADR-PADL);   // 0..total → x
+
+  // segment: blind/capture
+  let cx=PADL;
+  seg(cx, sx(cap), barY, barH, 'rgba(255,93,108,0.30)', COL.red, 'ADC blind ≤'+fmtUs(cap));
+  cx = sx(cap);
+  // segment: response (wake wall or instant grab)
+  if(state.mode==='suspend'){
+    // subdivide the 10 ms wall into phases
+    let pcx=cx;
+    cfg.phases.forEach(p=>{
+      const pw=(p.f*resp/total)*(PADR-PADL);
+      X.fillStyle=p.c; X.globalAlpha=.85; X.fillRect(pcx, barY, Math.max(1,pw), barH); X.globalAlpha=1;
+      X.strokeStyle='rgba(6,11,17,0.6)'; X.lineWidth=1; X.strokeRect(pcx,barY,Math.max(1,pw),barH);
+      if(pw>52){ X.fillStyle='#1a1304'; X.font='700 9px '+FONT; X.textAlign='center';
+        X.fillText(p.name, pcx+pw/2, barY+barH/2+3); }
+      pcx+=pw;
+    });
+    X.fillStyle=COL.amber; X.font='700 10px '+FONT; X.textAlign='center';
+    X.fillText('◄ 10 ms WAKE WALL ►', (cx+sx(cap+resp))/2, barY-6);
+  } else {
+    const gw=sx(cap+resp)-cx;
+    X.fillStyle=COL.green; X.fillRect(cx,barY,Math.max(2,gw),barH);
+    X.fillStyle=COL.green; X.font='700 9px '+FONT; X.textAlign='left';
+    X.fillText('grab ~1 cycle', cx+4, barY-6);
+  }
+  cx=sx(cap+resp);
+  seg(cx, sx(total), barY, barH, 'rgba(199,125,255,0.45)', COL.violet, 'process');
+
+  // playhead — the satisfying part: it crawls the wall in suspend, zips in idle
+  if(e){
+    const elapsed = Math.max(0, Math.min(total, state.vtime - e.t));
+    const px = sx(elapsed);
+    X.strokeStyle=COL.cyan; X.lineWidth=2;
+    X.beginPath(); X.moveTo(px, barY-12); X.lineTo(px, barY+barH+10); X.stroke();
+    X.fillStyle=COL.cyan; X.beginPath();
+    X.moveTo(px,barY-12); X.lineTo(px-4,barY-18); X.lineTo(px+4,barY-18); X.closePath(); X.fill();
+    X.fillStyle=COL.cyan; X.font='700 10px '+FONT; X.textAlign='center';
+    const phl = evPhase();
+    const lab = phl==='blind'?'+'+fmtUs(elapsed)+' · blind'
+              : phl==='waking'?'+'+fmtUs(elapsed)+' · still waking'
+              : (phl==='process'||phl==='grab')?'+'+fmtUs(elapsed)+' · processing'
+              : phl==='holdoff'?'delivered at +'+fmtUs(e.tDone-e.t)
+              : 'delivered at +'+fmtUs(e.tDone-e.t);
+    X.fillText(lab, Math.max(PADL+30,Math.min(PADR-30,px)), barY+barH+24);
+  }
+  // axis caption
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='right';
+  X.fillText('axis: 0 … '+fmtUs(total), PADR, barY+barH+24);
+  X.textAlign='left';
+  X.fillText('0', PADL, barY+barH+24);
+
+  // --- log-scale comparison: BOTH modes, always on screen (the 10 000× gap) ---
+  const ly=b.y+b.h-30, lx0=PADL, lx1=PADR;
+  const lmin=0, lmax=5; // log10 µs: 1 µs … 100 ms
+  const lsx = v => lx0 + (Math.log10(Math.max(1,v))-lmin)/(lmax-lmin)*(lx1-lx0);
+  X.strokeStyle=COL.line; X.lineWidth=1;
+  X.beginPath(); X.moveTo(lx0,ly); X.lineTo(lx1,ly); X.stroke();
+  X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='center';
+  [['1µs',1],['10µs',10],['100µs',100],['1ms',1000],['10ms',10000],['100ms',100000]].forEach(([t,v])=>{
+    const xx=lsx(v); X.strokeStyle=COL.grid; X.beginPath(); X.moveTo(xx,ly-4); X.lineTo(xx,ly+4); X.stroke();
+    X.fillStyle=COL.dim; X.fillText(t, xx, ly+15);
+  });
+  const sT=endToEnd('suspend'), iT=endToEnd('idle');
+  function mark(v,c,txt,up){
+    const xx=lsx(v), yy=up?ly-10:ly-10;
+    X.fillStyle=c; X.beginPath(); X.arc(xx,ly,4,0,7); X.fill();
+    X.font='700 9px '+FONT; X.textAlign='center'; X.fillText(txt, xx, ly-14);
+  }
+  // gap bracket
+  X.strokeStyle=COL.amber; X.lineWidth=1; X.globalAlpha=.6;
+  X.beginPath(); X.moveTo(lsx(iT),ly-26); X.lineTo(lsx(sT),ly-26); X.stroke(); X.globalAlpha=1;
+  X.fillStyle=COL.amber; X.font='700 9px '+FONT; X.textAlign='center';
+  X.fillText('×'+Math.round(sT/iT)+' slower', (lsx(iT)+lsx(sT))/2, ly-30);
+  mark(iT, COL.green, 'IDLE '+fmtUs(iT));
+  mark(sT, COL.red,   'SUSPEND '+fmtUs(sT));
+  X.textAlign='left';
+}
+function seg(x1,x2,y,h,fill,stroke,label){
+  X.fillStyle=fill; X.fillRect(x1,y,Math.max(1,x2-x1),h);
+  X.strokeStyle=stroke; X.lineWidth=1; X.strokeRect(x1,y,Math.max(1,x2-x1),h);
+  if(x2-x1>40){ X.fillStyle=stroke; X.font='8.5px '+FONT; X.textAlign='center';
+    X.fillText(label,(x1+x2)/2,y+h/2+3); }
+}
+
+// ---- band 3: beat comb + FIFO backlog (real beat spacing) ------------------
+function drawBacklog(){
+  const b=bands.back, x=10, w=W-20;
+  panel(x, b.y, w, b.h, 'MAILBOX FIFO · while the SoC wakes, the LP M7 keeps beating — samples pile up behind the wall', COL.cyan);
+  const peak=beatsDuringWake(), now=fifoNow();
+  const PADL=x+18, PADR=x+w-260, barY=b.y+34, barH=20;
+
+  // beat comb across the wake window (capped count so 1 µs doesn't smear)
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left';
+  X.fillText('LP M7 beats during the response window →', PADL, barY-6);
+  const drawN=Math.min(peak, 220);
+  for(let i=0;i<drawN;i++){
+    const xx=PADL+(i/Math.max(1,drawN-1))*(PADR-PADL-4);
+    const landed = i < now;
+    X.strokeStyle = landed ? COL.cyan : 'rgba(53,208,255,0.18)';
+    X.lineWidth=1; X.beginPath(); X.moveTo(xx,barY); X.lineTo(xx,barY+barH); X.stroke();
+  }
+  if(peak>220){ X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='right';
+    X.fillText('(comb capped — '+peak+' beats total)', PADR-2, barY+barH+12); }
+
+  // FIFO depth bar
+  const fy=barY+44;
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left';
+  X.fillText('FIFO depth', PADL, fy-5);
+  X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(PADL, fy, PADR-PADL, 18);
+  const fillFrac=Math.min(1, now/cfg.fifoDepth);
+  const over = peak>cfg.fifoDepth;
+  X.fillStyle = over ? COL.red : COL.cyan; X.globalAlpha=.7;
+  X.fillRect(PADL+1, fy+1, (PADR-PADL-2)*fillFrac, 16); X.globalAlpha=1;
+  // capacity tick
+  X.strokeStyle=COL.amber; X.setLineDash([3,3]); X.lineWidth=1;
+  X.beginPath(); X.moveTo(PADR, fy-3); X.lineTo(PADR, fy+21); X.stroke(); X.setLineDash([]);
+  X.fillStyle=COL.amber; X.font='8px '+FONT; X.textAlign='left';
+  X.fillText('cap '+cfg.fifoDepth, PADR+3, fy+13);
+
+  // readout on the right
+  const rx=x+w-238;
+  X.textAlign='left';
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('BEATS DURING WAKE', rx, b.y+30);
+  X.fillStyle = over?COL.red:COL.cyan; X.font='700 26px '+FONT;
+  X.fillText(peak.toLocaleString(), rx, b.y+58);
+  X.fillStyle=COL.dim; X.font='9px '+FONT;
+  X.fillText('= '+fmtUs(state.ev?state.ev.resp:respUs())+' / '+state.x+' µs beat', rx, b.y+74);
+  if(over){
+    X.fillStyle=COL.red; X.font='700 11px '+FONT;
+    X.fillText('⚠ OVERFLOW — '+(peak-cfg.fifoDepth).toLocaleString()+' samples dropped', rx, b.y+96);
+  } else {
+    X.fillStyle=COL.green; X.font='10px '+FONT;
+    X.fillText('✓ fits the '+cfg.fifoDepth+'-deep FIFO', rx, b.y+96);
+  }
+}
+
+// ---- band 4: energy --------------------------------------------------------
+function drawEnergy(){
+  const b=bands.enrg, x=10, w=W-20;
+  panel(x, b.y, w, b.h, 'ENERGY · suspend isn’t free — each wake is a 340 mW × 10 ms spike. It only pays off when events are RARE.', COL.amber);
+  const sA=socAvg('suspend'), iA=socAvg('idle'), be=breakevenGap();
+  const suspendWins = state.g > be;   // events rarer than breakeven → suspend saves
+
+  // two avg-power bars
+  const PADL=x+16, barX=PADL+118, barW=300, sy=b.y+34;
+  const maxP=Math.max(sA,iA,cfg.pIdle*1.2);
+  function pbar(yy,label,val,c,winner){
+    X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left'; X.fillText(label, PADL, yy+11);
+    X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(barX, yy, barW, 16);
+    X.fillStyle=c; X.globalAlpha=.7; X.fillRect(barX+1, yy+1, (barW-2)*Math.min(1,val/maxP), 14); X.globalAlpha=1;
+    X.fillStyle=c; X.font='700 11px '+FONT; X.textAlign='left';
+    X.fillText(val.toFixed(1)+' mW'+(winner?'  ◄ lower':''), barX+barW+10, yy+12);
+  }
+  pbar(sy,    'SoC avg · SUSPEND', sA, state.mode==='suspend'?COL.red:'rgba(255,93,108,0.6)', !suspendWins?false:true);
+  pbar(sy+26, 'SoC avg · IDLE',    iA, state.mode==='idle'?COL.green:'rgba(70,224,138,0.6)', suspendWins?false:true);
+
+  // breakeven readout
+  const rx=x+w-312;
+  X.textAlign='left'; X.fillStyle=COL.dim; X.font='9px '+FONT;
+  X.fillText('BREAK-EVEN EVENT GAP', rx, b.y+30);
+  X.fillStyle=COL.amber; X.font='700 22px '+FONT;
+  X.fillText(fmtUs(be), rx, b.y+55);
+  X.fillStyle=COL.dim; X.font='9px '+FONT;
+  X.fillText('events @ '+fmtUs(state.g)+' → '+(suspendWins?'suspend saves':'idle is cheaper'), rx, b.y+72);
+  X.fillStyle = suspendWins?COL.green:COL.red; X.font='700 10px '+FONT;
+  X.fillText(suspendWins?'rare enough — deep sleep wins' : 'too frequent — idle wins on power AND latency', rx, b.y+88);
+  // LP M7 power chip
+  X.textAlign='left'; X.fillStyle=COL.dim; X.font='8.5px '+FONT;
+  X.fillText('LP M7: '+pLp().toFixed(0)+' mW (∝ beat rate)', PADL, b.y+b.h-8);
+}
+
+// ---- band 5: metrics + verdict ---------------------------------------------
+function chip(x,y,w,h,label,val,unit,color,sub){
+  X.fillStyle=COL.panel; X.strokeStyle=COL.line; X.lineWidth=1;
+  X.beginPath(); X.rect(x,y,w,h); X.fill(); X.stroke();
+  X.fillStyle=COL.dim; X.font='8.5px '+FONT; X.textAlign='left'; X.fillText(label, x+9, y+15);
+  X.fillStyle=color; X.font='700 20px '+FONT; X.fillText(val, x+9, y+40);
+  X.fillStyle=COL.dim; X.font='9px '+FONT;
+  X.fillText(unit, x+9 + X.measureText(val).width + 5, y+40);
+  if(sub){ X.fillStyle=COL.dim; X.font='8px '+FONT; X.fillText(sub, x+9, y+h-8); }
+}
+function drawMeta(){
+  const b=bands.meta, x=10, w=W-20;
+  const susp = state.mode==='suspend';
+  const cw=(w-10*4)/5, ch=b.h-46, cy=b.y+34;
+  let cx=x;
+  const e2e=endToEnd();
+  chip(cx,cy,cw,ch,'RESPONSE', susp?'10':fmtUs(respUs()).split(' ')[0], susp?'ms':fmtUs(respUs()).split(' ')[1],
+       susp?COL.red:COL.green, susp?'wake to first word':'~1 cycle @ 800 MHz'); cx+=cw+10;
+  chip(cx,cy,cw,ch,'END-TO-END', fmtUs(e2e).split(' ')[0], fmtUs(e2e).split(' ')[1],
+       susp?COL.red:COL.green, 'capture+resp+process'); cx+=cw+10;
+  chip(cx,cy,cw,ch,'BEAT RATE', '1:'+state.x, 'µs', COL.cyan,
+       susp?'invisible behind wall':'= your latency now'); cx+=cw+10;
+  const peak=beatsDuringWake(), over=peak>cfg.fifoDepth;
+  chip(cx,cy,cw,ch,'WAKE BACKLOG', peak>=1000?(peak/1000).toFixed(1)+'k':String(peak), 'beats',
+       over?COL.red:COL.green, over?'FIFO overflows':'fits FIFO'); cx+=cw+10;
+  const sA=socAvg();
+  chip(cx,cy,cw,ch,'SoC AVG PWR', sA.toFixed(0), 'mW', COL.amber, 'at '+fmtUs(state.g)+' events');
+
+  // verdict banner
+  const be=breakevenGap(), suspendWins=state.g>be;
+  let msg, bc;
+  if(!susp){
+    bc=COL.green;
+    msg='IDLE — first word in ~1 cycle, so latency ≈ capture ('+state.x+' µs). The beat rate is back to mattering. Costs '+cfg.pIdle+' mW standby — but no 10 ms wall.';
+  } else if(!suspendWins){
+    bc=COL.red;
+    msg='SUSPEND — paying a 10 ms wake on EVERY event AND, below '+fmtUs(be)+' spacing, burning more power than idle. Worst of both: slow AND hungry.';
+  } else {
+    bc=COL.amber;
+    msg='SUSPEND — events are rare enough (> '+fmtUs(be)+') that deep sleep saves standby power. You trade 10 ms of latency for it. Beat rate is irrelevant here.';
+  }
+  X.fillStyle = bc==COL.green?'rgba(70,224,138,0.10)':bc==COL.amber?'rgba(255,178,62,0.10)':'rgba(255,93,108,0.10)';
+  X.strokeStyle=bc; X.lineWidth=1;
+  X.beginPath(); X.rect(x, b.y, w, 20); X.fill(); X.stroke();
+  X.fillStyle=bc; X.font='700 11px '+FONT; X.textAlign='center';
+  X.fillText(msg, W/2, b.y+14);
+  X.textAlign='left';
+}
+
+function frame(now){
+  if(state.playing){
+    if(!state.lastReal) state.lastReal=now;
+    let dt=(now-state.lastReal)/1000; state.lastReal=now;
+    dt=Math.min(dt,0.05);
+    advance(dt*state.speed);
+  } else { state.lastReal=now; }
+  X.clearRect(0,0,W,H);
+  X.fillStyle=COL.bg; X.fillRect(0,0,W,H);
+  drawTopo();
+  drawTimeline();
+  drawBacklog();
+  drawEnergy();
+  drawMeta();
+  requestAnimationFrame(frame);
+}
+
+// ---- controls --------------------------------------------------------------
+function wireSeg(id, attr, fn){
+  const grp=document.getElementById(id);
+  grp.addEventListener('click', e=>{
+    const btn=e.target.closest('button'); if(!btn) return;
+    [...grp.querySelectorAll('button')].forEach(b=>b.setAttribute('aria-pressed', b===btn?'true':'false'));
+    fn(btn.dataset[attr]);
+  });
+}
+function resetEvent(){ state.ev=null; state.nextFire=state.vtime+120; }
+wireSeg('mode','mode', v=>{ state.mode=v; resetEvent(); status(); });
+wireSeg('beat','x', v=>{ state.x=+v; resetEvent(); status(); });
+wireSeg('rate','g', v=>{ state.g=+v; status(); });
+wireSeg('hold','h', v=>{ state.hold=+v; resetEvent(); });
+wireSeg('speed','speed', v=>{ state.speed=+v; });
+
+document.getElementById('play').addEventListener('click', e=>{
+  state.playing=!state.playing; e.target.textContent = state.playing?'⏸ Pause':'▶ Play';
+});
+document.getElementById('kick').addEventListener('click', ()=>{
+  fireEvent(state.vtime + state.x*0.5);   // inject one now (lands on the next beat)
+});
+
+function status(){
+  const s=document.getElementById('status');
+  if(state.mode==='suspend'){
+    s.innerHTML='<b style="color:var(--red)">Suspend</b> — the outer M7s are asleep. The LP M7 catches the event in ≤'+state.x+' µs and rings the doorbell, but the SoC needs <b style="color:var(--red)">10 ms</b> to reach its first instruction. Make the beat 1 µs or 100 µs — end-to-end barely budges. That’s the wall.';
+  } else {
+    s.innerHTML='<b style="color:var(--green)">Idle</b> — the outer M7s are clocked and waiting, so they grab the payload in ~1 cycle. Now the only latency left is the <b>capture</b> — so the LP M7 beat rate is suddenly the whole game, just like the ISR loop.';
+  }
+}
+function syncSeg(id, attr, val){
+  const grp=document.getElementById(id);
+  [...grp.querySelectorAll('button')].forEach(b=>b.setAttribute('aria-pressed', b.dataset[attr]==String(val)?'true':'false'));
+}
+syncSeg('mode','mode',state.mode); syncSeg('beat','x',state.x); syncSeg('rate','g',state.g);
+syncSeg('hold','h',state.hold); syncSeg('speed','speed',state.speed);
+status();
+requestAnimationFrame(frame);
+
+// ---- GIF recording (same file:// worker-blob trick as index.html) ----
+const GIF_WORKER_B64 = "Ly8gZ2lmLndvcmtlci5qcyAwLjIuMCAtIGh0dHBzOi8vZ2l0aHViLmNvbS9qbm9yZGJlcmcvZ2lmLmpzCihmdW5jdGlvbiBlKHQsbixyKXtmdW5jdGlvbiBzKG8sdSl7aWYoIW5bb10pe2lmKCF0W29dKXt2YXIgYT10eXBlb2YgcmVxdWlyZT09ImZ1bmN0aW9uIiYmcmVxdWlyZTtpZighdSYmYSlyZXR1cm4gYShvLCEwKTtpZihpKXJldHVybiBpKG8sITApO3ZhciBmPW5ldyBFcnJvcigiQ2Fubm90IGZpbmQgbW9kdWxlICciK28rIiciKTt0aHJvdyBmLmNvZGU9Ik1PRFVMRV9OT1RfRk9VTkQiLGZ9dmFyIGw9bltvXT17ZXhwb3J0czp7fX07dFtvXVswXS5jYWxsKGwuZXhwb3J0cyxmdW5jdGlvbihlKXt2YXIgbj10W29dWzFdW2VdO3JldHVybiBzKG4/bjplKX0sbCxsLmV4cG9ydHMsZSx0LG4scil9cmV0dXJuIG5bb10uZXhwb3J0c312YXIgaT10eXBlb2YgcmVxdWlyZT09ImZ1bmN0aW9uIiYmcmVxdWlyZTtmb3IodmFyIG89MDtvPHIubGVuZ3RoO28rKylzKHJbb10pO3JldHVybiBzfSkoezE6W2Z1bmN0aW9uKHJlcXVpcmUsbW9kdWxlLGV4cG9ydHMpe3ZhciBOZXVRdWFudD1yZXF1aXJlKCIuL1R5cGVkTmV1UXVhbnQuanMiKTt2YXIgTFpXRW5jb2Rlcj1yZXF1aXJlKCIuL0xaV0VuY29kZXIuanMiKTtmdW5jdGlvbiBCeXRlQXJyYXkoKXt0aGlzLnBhZ2U9LTE7dGhpcy5wYWdlcz1bXTt0aGlzLm5ld1BhZ2UoKX1CeXRlQXJyYXkucGFnZVNpemU9NDA5NjtCeXRlQXJyYXkuY2hhck1hcD17fTtmb3IodmFyIGk9MDtpPDI1NjtpKyspQnl0ZUFycmF5LmNoYXJNYXBbaV09U3RyaW5nLmZyb21DaGFyQ29kZShpKTtCeXRlQXJyYXkucHJvdG90eXBlLm5ld1BhZ2U9ZnVuY3Rpb24oKXt0aGlzLnBhZ2VzWysrdGhpcy5wYWdlXT1uZXcgVWludDhBcnJheShCeXRlQXJyYXkucGFnZVNpemUpO3RoaXMuY3Vyc29yPTB9O0J5dGVBcnJheS5wcm90b3R5cGUuZ2V0RGF0YT1mdW5jdGlvbigpe3ZhciBydj0iIjtmb3IodmFyIHA9MDtwPHRoaXMucGFnZXMubGVuZ3RoO3ArKyl7Zm9yKHZhciBpPTA7aTxCeXRlQXJyYXkucGFnZVNpemU7aSsrKXtydis9Qnl0ZUFycmF5LmNoYXJNYXBbdGhpcy5wYWdlc1twXVtpXV19fXJldHVybiBydn07Qnl0ZUFycmF5LnByb3RvdHlwZS53cml0ZUJ5dGU9ZnVuY3Rpb24odmFsKXtpZih0aGlzLmN1cnNvcj49Qnl0ZUFycmF5LnBhZ2VTaXplKXRoaXMubmV3UGFnZSgpO3RoaXMucGFnZXNbdGhpcy5wYWdlXVt0aGlzLmN1cnNvcisrXT12YWx9O0J5dGVBcnJheS5wcm90b3R5cGUud3JpdGVVVEZCeXRlcz1mdW5jdGlvbihzdHJpbmcpe2Zvcih2YXIgbD1zdHJpbmcubGVuZ3RoLGk9MDtpPGw7aSsrKXRoaXMud3JpdGVCeXRlKHN0cmluZy5jaGFyQ29kZUF0KGkpKX07Qnl0ZUFycmF5LnByb3RvdHlwZS53cml0ZUJ5dGVzPWZ1bmN0aW9uKGFycmF5LG9mZnNldCxsZW5ndGgpe2Zvcih2YXIgbD1sZW5ndGh8fGFycmF5Lmxlbmd0aCxpPW9mZnNldHx8MDtpPGw7aSsrKXRoaXMud3JpdGVCeXRlKGFycmF5W2ldKX07ZnVuY3Rpb24gR0lGRW5jb2Rlcih3aWR0aCxoZWlnaHQpe3RoaXMud2lkdGg9fn53aWR0aDt0aGlzLmhlaWdodD1+fmhlaWdodDt0aGlzLnRyYW5zcGFyZW50PW51bGw7dGhpcy50cmFuc0luZGV4PTA7dGhpcy5yZXBlYXQ9LTE7dGhpcy5kZWxheT0wO3RoaXMuaW1hZ2U9bnVsbDt0aGlzLnBpeGVscz1udWxsO3RoaXMuaW5kZXhlZFBpeGVscz1udWxsO3RoaXMuY29sb3JEZXB0aD1udWxsO3RoaXMuY29sb3JUYWI9bnVsbDt0aGlzLm5ldVF1YW50PW51bGw7dGhpcy51c2VkRW50cnk9bmV3IEFycmF5O3RoaXMucGFsU2l6ZT03O3RoaXMuZGlzcG9zZT0tMTt0aGlzLmZpcnN0RnJhbWU9dHJ1ZTt0aGlzLnNhbXBsZT0xMDt0aGlzLmRpdGhlcj1mYWxzZTt0aGlzLmdsb2JhbFBhbGV0dGU9ZmFsc2U7dGhpcy5vdXQ9bmV3IEJ5dGVBcnJheX1HSUZFbmNvZGVyLnByb3RvdHlwZS5zZXREZWxheT1mdW5jdGlvbihtaWxsaXNlY29uZHMpe3RoaXMuZGVsYXk9TWF0aC5yb3VuZChtaWxsaXNlY29uZHMvMTApfTtHSUZFbmNvZGVyLnByb3RvdHlwZS5zZXRGcmFtZVJhdGU9ZnVuY3Rpb24oZnBzKXt0aGlzLmRlbGF5PU1hdGgucm91bmQoMTAwL2Zwcyl9O0dJRkVuY29kZXIucHJvdG90eXBlLnNldERpc3Bvc2U9ZnVuY3Rpb24oZGlzcG9zYWxDb2RlKXtpZihkaXNwb3NhbENvZGU+PTApdGhpcy5kaXNwb3NlPWRpc3Bvc2FsQ29kZX07R0lGRW5jb2Rlci5wcm90b3R5cGUuc2V0UmVwZWF0PWZ1bmN0aW9uKHJlcGVhdCl7dGhpcy5yZXBlYXQ9cmVwZWF0fTtHSUZFbmNvZGVyLnByb3RvdHlwZS5zZXRUcmFuc3BhcmVudD1mdW5jdGlvbihjb2xvcil7dGhpcy50cmFuc3BhcmVudD1jb2xvcn07R0lGRW5jb2Rlci5wcm90b3R5cGUuYWRkRnJhbWU9ZnVuY3Rpb24oaW1hZ2VEYXRhKXt0aGlzLmltYWdlPWltYWdlRGF0YTt0aGlzLmNvbG9yVGFiPXRoaXMuZ2xvYmFsUGFsZXR0ZSYmdGhpcy5nbG9iYWxQYWxldHRlLnNsaWNlP3RoaXMuZ2xvYmFsUGFsZXR0ZTpudWxsO3RoaXMuZ2V0SW1hZ2VQaXhlbHMoKTt0aGlzLmFuYWx5emVQaXhlbHMoKTtpZih0aGlzLmdsb2JhbFBhbGV0dGU9PT10cnVlKXRoaXMuZ2xvYmFsUGFsZXR0ZT10aGlzLmNvbG9yVGFiO2lmKHRoaXMuZmlyc3RGcmFtZSl7dGhpcy53cml0ZUxTRCgpO3RoaXMud3JpdGVQYWxldHRlKCk7aWYodGhpcy5yZXBlYXQ+PTApe3RoaXMud3JpdGVOZXRzY2FwZUV4dCgpfX10aGlzLndyaXRlR3JhcGhpY0N0cmxFeHQoKTt0aGlzLndyaXRlSW1hZ2VEZXNjKCk7aWYoIXRoaXMuZmlyc3RGcmFtZSYmIXRoaXMuZ2xvYmFsUGFsZXR0ZSl0aGlzLndyaXRlUGFsZXR0ZSgpO3RoaXMud3JpdGVQaXhlbHMoKTt0aGlzLmZpcnN0RnJhbWU9ZmFsc2V9O0dJRkVuY29kZXIucHJvdG90eXBlLmZpbmlzaD1mdW5jdGlvbigpe3RoaXMub3V0LndyaXRlQnl0ZSg1OSl9O0dJRkVuY29kZXIucHJvdG90eXBlLnNldFF1YWxpdHk9ZnVuY3Rpb24ocXVhbGl0eSl7aWYocXVhbGl0eTwxKXF1YWxpdHk9MTt0aGlzLnNhbXBsZT1xdWFsaXR5fTtHSUZFbmNvZGVyLnByb3RvdHlwZS5zZXREaXRoZXI9ZnVuY3Rpb24oZGl0aGVyKXtpZihkaXRoZXI9PT10cnVlKWRpdGhlcj0iRmxveWRTdGVpbmJlcmciO3RoaXMuZGl0aGVyPWRpdGhlcn07R0lGRW5jb2Rlci5wcm90b3R5cGUuc2V0R2xvYmFsUGFsZXR0ZT1mdW5jdGlvbihwYWxldHRlKXt0aGlzLmdsb2JhbFBhbGV0dGU9cGFsZXR0ZX07R0lGRW5jb2Rlci5wcm90b3R5cGUuZ2V0R2xvYmFsUGFsZXR0ZT1mdW5jdGlvbigpe3JldHVybiB0aGlzLmdsb2JhbFBhbGV0dGUmJnRoaXMuZ2xvYmFsUGFsZXR0ZS5zbGljZSYmdGhpcy5nbG9iYWxQYWxldHRlLnNsaWNlKDApfHx0aGlzLmdsb2JhbFBhbGV0dGV9O0dJRkVuY29kZXIucHJvdG90eXBlLndyaXRlSGVhZGVyPWZ1bmN0aW9uKCl7dGhpcy5vdXQud3JpdGVVVEZCeXRlcygiR0lGODlhIil9O0dJRkVuY29kZXIucHJvdG90eXBlLmFuYWx5emVQaXhlbHM9ZnVuY3Rpb24oKXtpZighdGhpcy5jb2xvclRhYil7dGhpcy5uZXVRdWFudD1uZXcgTmV1UXVhbnQodGhpcy5waXhlbHMsdGhpcy5zYW1wbGUpO3RoaXMubmV1UXVhbnQuYnVpbGRDb2xvcm1hcCgpO3RoaXMuY29sb3JUYWI9dGhpcy5uZXVRdWFudC5nZXRDb2xvcm1hcCgpfWlmKHRoaXMuZGl0aGVyKXt0aGlzLmRpdGhlclBpeGVscyh0aGlzLmRpdGhlci5yZXBsYWNlKCItc2VycGVudGluZSIsIiIpLHRoaXMuZGl0aGVyLm1hdGNoKC8tc2VycGVudGluZS8pIT09bnVsbCl9ZWxzZXt0aGlzLmluZGV4UGl4ZWxzKCl9dGhpcy5waXhlbHM9bnVsbDt0aGlzLmNvbG9yRGVwdGg9ODt0aGlzLnBhbFNpemU9NztpZih0aGlzLnRyYW5zcGFyZW50IT09bnVsbCl7dGhpcy50cmFuc0luZGV4PXRoaXMuZmluZENsb3Nlc3QodGhpcy50cmFuc3BhcmVudCx0cnVlKX19O0dJRkVuY29kZXIucHJvdG90eXBlLmluZGV4UGl4ZWxzPWZ1bmN0aW9uKGltZ3Epe3ZhciBuUGl4PXRoaXMucGl4ZWxzLmxlbmd0aC8zO3RoaXMuaW5kZXhlZFBpeGVscz1uZXcgVWludDhBcnJheShuUGl4KTt2YXIgaz0wO2Zvcih2YXIgaj0wO2o8blBpeDtqKyspe3ZhciBpbmRleD10aGlzLmZpbmRDbG9zZXN0UkdCKHRoaXMucGl4ZWxzW2srK10mMjU1LHRoaXMucGl4ZWxzW2srK10mMjU1LHRoaXMucGl4ZWxzW2srK10mMjU1KTt0aGlzLnVzZWRFbnRyeVtpbmRleF09dHJ1ZTt0aGlzLmluZGV4ZWRQaXhlbHNbal09aW5kZXh9fTtHSUZFbmNvZGVyLnByb3RvdHlwZS5kaXRoZXJQaXhlbHM9ZnVuY3Rpb24oa2VybmVsLHNlcnBlbnRpbmUpe3ZhciBrZXJuZWxzPXtGYWxzZUZsb3lkU3RlaW5iZXJnOltbMy84LDEsMF0sWzMvOCwwLDFdLFsyLzgsMSwxXV0sRmxveWRTdGVpbmJlcmc6W1s3LzE2LDEsMF0sWzMvMTYsLTEsMV0sWzUvMTYsMCwxXSxbMS8xNiwxLDFdXSxTdHVja2k6W1s4LzQyLDEsMF0sWzQvNDIsMiwwXSxbMi80MiwtMiwxXSxbNC80MiwtMSwxXSxbOC80MiwwLDFdLFs0LzQyLDEsMV0sWzIvNDIsMiwxXSxbMS80MiwtMiwyXSxbMi80MiwtMSwyXSxbNC80MiwwLDJdLFsyLzQyLDEsMl0sWzEvNDIsMiwyXV0sQXRraW5zb246W1sxLzgsMSwwXSxbMS84LDIsMF0sWzEvOCwtMSwxXSxbMS84LDAsMV0sWzEvOCwxLDFdLFsxLzgsMCwyXV19O2lmKCFrZXJuZWx8fCFrZXJuZWxzW2tlcm5lbF0pe3Rocm93IlVua25vd24gZGl0aGVyaW5nIGtlcm5lbDogIitrZXJuZWx9dmFyIGRzPWtlcm5lbHNba2VybmVsXTt2YXIgaW5kZXg9MCxoZWlnaHQ9dGhpcy5oZWlnaHQsd2lkdGg9dGhpcy53aWR0aCxkYXRhPXRoaXMucGl4ZWxzO3ZhciBkaXJlY3Rpb249c2VycGVudGluZT8tMToxO3RoaXMuaW5kZXhlZFBpeGVscz1uZXcgVWludDhBcnJheSh0aGlzLnBpeGVscy5sZW5ndGgvMyk7Zm9yKHZhciB5PTA7eTxoZWlnaHQ7eSsrKXtpZihzZXJwZW50aW5lKWRpcmVjdGlvbj1kaXJlY3Rpb24qLTE7Zm9yKHZhciB4PWRpcmVjdGlvbj09MT8wOndpZHRoLTEseGVuZD1kaXJlY3Rpb249PTE/d2lkdGg6MDt4IT09eGVuZDt4Kz1kaXJlY3Rpb24pe2luZGV4PXkqd2lkdGgreDt2YXIgaWR4PWluZGV4KjM7dmFyIHIxPWRhdGFbaWR4XTt2YXIgZzE9ZGF0YVtpZHgrMV07dmFyIGIxPWRhdGFbaWR4KzJdO2lkeD10aGlzLmZpbmRDbG9zZXN0UkdCKHIxLGcxLGIxKTt0aGlzLnVzZWRFbnRyeVtpZHhdPXRydWU7dGhpcy5pbmRleGVkUGl4ZWxzW2luZGV4XT1pZHg7aWR4Kj0zO3ZhciByMj10aGlzLmNvbG9yVGFiW2lkeF07dmFyIGcyPXRoaXMuY29sb3JUYWJbaWR4KzFdO3ZhciBiMj10aGlzLmNvbG9yVGFiW2lkeCsyXTt2YXIgZXI9cjEtcjI7dmFyIGVnPWcxLWcyO3ZhciBlYj1iMS1iMjtmb3IodmFyIGk9ZGlyZWN0aW9uPT0xPzA6ZHMubGVuZ3RoLTEsZW5kPWRpcmVjdGlvbj09MT9kcy5sZW5ndGg6MDtpIT09ZW5kO2krPWRpcmVjdGlvbil7dmFyIHgxPWRzW2ldWzFdO3ZhciB5MT1kc1tpXVsyXTtpZih4MSt4Pj0wJiZ4MSt4PHdpZHRoJiZ5MSt5Pj0wJiZ5MSt5PGhlaWdodCl7dmFyIGQ9ZHNbaV1bMF07aWR4PWluZGV4K3gxK3kxKndpZHRoO2lkeCo9MztkYXRhW2lkeF09TWF0aC5tYXgoMCxNYXRoLm1pbigyNTUsZGF0YVtpZHhdK2VyKmQpKTtkYXRhW2lkeCsxXT1NYXRoLm1heCgwLE1hdGgubWluKDI1NSxkYXRhW2lkeCsxXStlZypkKSk7ZGF0YVtpZHgrMl09TWF0aC5tYXgoMCxNYXRoLm1pbigyNTUsZGF0YVtpZHgrMl0rZWIqZCkpfX19fX07R0lGRW5jb2Rlci5wcm90b3R5cGUuZmluZENsb3Nlc3Q9ZnVuY3Rpb24oYyx1c2VkKXtyZXR1cm4gdGhpcy5maW5kQ2xvc2VzdFJHQigoYyYxNjcxMTY4MCk+PjE2LChjJjY1MjgwKT4+OCxjJjI1NSx1c2VkKX07R0lGRW5jb2Rlci5wcm90b3R5cGUuZmluZENsb3Nlc3RSR0I9ZnVuY3Rpb24ocixnLGIsdXNlZCl7aWYodGhpcy5jb2xvclRhYj09PW51bGwpcmV0dXJuLTE7aWYodGhpcy5uZXVRdWFudCYmIXVzZWQpe3JldHVybiB0aGlzLm5ldVF1YW50Lmxvb2t1cFJHQihyLGcsYil9dmFyIGM9YnxnPDw4fHI8PDE2O3ZhciBtaW5wb3M9MDt2YXIgZG1pbj0yNTYqMjU2KjI1Njt2YXIgbGVuPXRoaXMuY29sb3JUYWIubGVuZ3RoO2Zvcih2YXIgaT0wLGluZGV4PTA7aTxsZW47aW5kZXgrKyl7dmFyIGRyPXItKHRoaXMuY29sb3JUYWJbaSsrXSYyNTUpO3ZhciBkZz1nLSh0aGlzLmNvbG9yVGFiW2krK10mMjU1KTt2YXIgZGI9Yi0odGhpcy5jb2xvclRhYltpKytdJjI1NSk7dmFyIGQ9ZHIqZHIrZGcqZGcrZGIqZGI7aWYoKCF1c2VkfHx0aGlzLnVzZWRFbnRyeVtpbmRleF0pJiZkPGRtaW4pe2RtaW49ZDttaW5wb3M9aW5kZXh9fXJldHVybiBtaW5wb3N9O0dJRkVuY29kZXIucHJvdG90eXBlLmdldEltYWdlUGl4ZWxzPWZ1bmN0aW9uKCl7dmFyIHc9dGhpcy53aWR0aDt2YXIgaD10aGlzLmhlaWdodDt0aGlzLnBpeGVscz1uZXcgVWludDhBcnJheSh3KmgqMyk7dmFyIGRhdGE9dGhpcy5pbWFnZTt2YXIgc3JjUG9zPTA7dmFyIGNvdW50PTA7Zm9yKHZhciBpPTA7aTxoO2krKyl7Zm9yKHZhciBqPTA7ajx3O2orKyl7dGhpcy5waXhlbHNbY291bnQrK109ZGF0YVtzcmNQb3MrK107dGhpcy5waXhlbHNbY291bnQrK109ZGF0YVtzcmNQb3MrK107dGhpcy5waXhlbHNbY291bnQrK109ZGF0YVtzcmNQb3MrK107c3JjUG9zKyt9fX07R0lGRW5jb2Rlci5wcm90b3R5cGUud3JpdGVHcmFwaGljQ3RybEV4dD1mdW5jdGlvbigpe3RoaXMub3V0LndyaXRlQnl0ZSgzMyk7dGhpcy5vdXQud3JpdGVCeXRlKDI0OSk7dGhpcy5vdXQud3JpdGVCeXRlKDQpO3ZhciB0cmFuc3AsZGlzcDtpZih0aGlzLnRyYW5zcGFyZW50PT09bnVsbCl7dHJhbnNwPTA7ZGlzcD0wfWVsc2V7dHJhbnNwPTE7ZGlzcD0yfWlmKHRoaXMuZGlzcG9zZT49MCl7ZGlzcD1kaXNwb3NlJjd9ZGlzcDw8PTI7dGhpcy5vdXQud3JpdGVCeXRlKDB8ZGlzcHwwfHRyYW5zcCk7dGhpcy53cml0ZVNob3J0KHRoaXMuZGVsYXkpO3RoaXMub3V0LndyaXRlQnl0ZSh0aGlzLnRyYW5zSW5kZXgpO3RoaXMub3V0LndyaXRlQnl0ZSgwKX07R0lGRW5jb2Rlci5wcm90b3R5cGUud3JpdGVJbWFnZURlc2M9ZnVuY3Rpb24oKXt0aGlzLm91dC53cml0ZUJ5dGUoNDQpO3RoaXMud3JpdGVTaG9ydCgwKTt0aGlzLndyaXRlU2hvcnQoMCk7dGhpcy53cml0ZVNob3J0KHRoaXMud2lkdGgpO3RoaXMud3JpdGVTaG9ydCh0aGlzLmhlaWdodCk7aWYodGhpcy5maXJzdEZyYW1lfHx0aGlzLmdsb2JhbFBhbGV0dGUpe3RoaXMub3V0LndyaXRlQnl0ZSgwKX1lbHNle3RoaXMub3V0LndyaXRlQnl0ZSgxMjh8MHwwfDB8dGhpcy5wYWxTaXplKX19O0dJRkVuY29kZXIucHJvdG90eXBlLndyaXRlTFNEPWZ1bmN0aW9uKCl7dGhpcy53cml0ZVNob3J0KHRoaXMud2lkdGgpO3RoaXMud3JpdGVTaG9ydCh0aGlzLmhlaWdodCk7dGhpcy5vdXQud3JpdGVCeXRlKDEyOHwxMTJ8MHx0aGlzLnBhbFNpemUpO3RoaXMub3V0LndyaXRlQnl0ZSgwKTt0aGlzLm91dC53cml0ZUJ5dGUoMCl9O0dJRkVuY29kZXIucHJvdG90eXBlLndyaXRlTmV0c2NhcGVFeHQ9ZnVuY3Rpb24oKXt0aGlzLm91dC53cml0ZUJ5dGUoMzMpO3RoaXMub3V0LndyaXRlQnl0ZSgyNTUpO3RoaXMub3V0LndyaXRlQnl0ZSgxMSk7dGhpcy5vdXQud3JpdGVVVEZCeXRlcygiTkVUU0NBUEUyLjAiKTt0aGlzLm91dC53cml0ZUJ5dGUoMyk7dGhpcy5vdXQud3JpdGVCeXRlKDEpO3RoaXMud3JpdGVTaG9ydCh0aGlzLnJlcGVhdCk7dGhpcy5vdXQud3JpdGVCeXRlKDApfTtHSUZFbmNvZGVyLnByb3RvdHlwZS53cml0ZVBhbGV0dGU9ZnVuY3Rpb24oKXt0aGlzLm91dC53cml0ZUJ5dGVzKHRoaXMuY29sb3JUYWIpO3ZhciBuPTMqMjU2LXRoaXMuY29sb3JUYWIubGVuZ3RoO2Zvcih2YXIgaT0wO2k8bjtpKyspdGhpcy5vdXQud3JpdGVCeXRlKDApfTtHSUZFbmNvZGVyLnByb3RvdHlwZS53cml0ZVNob3J0PWZ1bmN0aW9uKHBWYWx1ZSl7dGhpcy5vdXQud3JpdGVCeXRlKHBWYWx1ZSYyNTUpO3RoaXMub3V0LndyaXRlQnl0ZShwVmFsdWU+PjgmMjU1KX07R0lGRW5jb2Rlci5wcm90b3R5cGUud3JpdGVQaXhlbHM9ZnVuY3Rpb24oKXt2YXIgZW5jPW5ldyBMWldFbmNvZGVyKHRoaXMud2lkdGgsdGhpcy5oZWlnaHQsdGhpcy5pbmRleGVkUGl4ZWxzLHRoaXMuY29sb3JEZXB0aCk7ZW5jLmVuY29kZSh0aGlzLm91dCl9O0dJRkVuY29kZXIucHJvdG90eXBlLnN0cmVhbT1mdW5jdGlvbigpe3JldHVybiB0aGlzLm91dH07bW9kdWxlLmV4cG9ydHM9R0lGRW5jb2Rlcn0seyIuL0xaV0VuY29kZXIuanMiOjIsIi4vVHlwZWROZXVRdWFudC5qcyI6M31dLDI6W2Z1bmN0aW9uKHJlcXVpcmUsbW9kdWxlLGV4cG9ydHMpe3ZhciBFT0Y9LTE7dmFyIEJJVFM9MTI7dmFyIEhTSVpFPTUwMDM7dmFyIG1hc2tzPVswLDEsMyw3LDE1LDMxLDYzLDEyNywyNTUsNTExLDEwMjMsMjA0Nyw0MDk1LDgxOTEsMTYzODMsMzI3NjcsNjU1MzVdO2Z1bmN0aW9uIExaV0VuY29kZXIod2lkdGgsaGVpZ2h0LHBpeGVscyxjb2xvckRlcHRoKXt2YXIgaW5pdENvZGVTaXplPU1hdGgubWF4KDIsY29sb3JEZXB0aCk7dmFyIGFjY3VtPW5ldyBVaW50OEFycmF5KDI1Nik7dmFyIGh0YWI9bmV3IEludDMyQXJyYXkoSFNJWkUpO3ZhciBjb2RldGFiPW5ldyBJbnQzMkFycmF5KEhTSVpFKTt2YXIgY3VyX2FjY3VtLGN1cl9iaXRzPTA7dmFyIGFfY291bnQ7dmFyIGZyZWVfZW50PTA7dmFyIG1heGNvZGU7dmFyIGNsZWFyX2ZsZz1mYWxzZTt2YXIgZ19pbml0X2JpdHMsQ2xlYXJDb2RlLEVPRkNvZGU7ZnVuY3Rpb24gY2hhcl9vdXQoYyxvdXRzKXthY2N1bVthX2NvdW50KytdPWM7aWYoYV9jb3VudD49MjU0KWZsdXNoX2NoYXIob3V0cyl9ZnVuY3Rpb24gY2xfYmxvY2sob3V0cyl7Y2xfaGFzaChIU0laRSk7ZnJlZV9lbnQ9Q2xlYXJDb2RlKzI7Y2xlYXJfZmxnPXRydWU7b3V0cHV0KENsZWFyQ29kZSxvdXRzKX1mdW5jdGlvbiBjbF9oYXNoKGhzaXplKXtmb3IodmFyIGk9MDtpPGhzaXplOysraSlodGFiW2ldPS0xfWZ1bmN0aW9uIGNvbXByZXNzKGluaXRfYml0cyxvdXRzKXt2YXIgZmNvZGUsYyxpLGVudCxkaXNwLGhzaXplX3JlZyxoc2hpZnQ7Z19pbml0X2JpdHM9aW5pdF9iaXRzO2NsZWFyX2ZsZz1mYWxzZTtuX2JpdHM9Z19pbml0X2JpdHM7bWF4Y29kZT1NQVhDT0RFKG5fYml0cyk7Q2xlYXJDb2RlPTE8PGluaXRfYml0cy0xO0VPRkNvZGU9Q2xlYXJDb2RlKzE7ZnJlZV9lbnQ9Q2xlYXJDb2RlKzI7YV9jb3VudD0wO2VudD1uZXh0UGl4ZWwoKTtoc2hpZnQ9MDtmb3IoZmNvZGU9SFNJWkU7ZmNvZGU8NjU1MzY7ZmNvZGUqPTIpKytoc2hpZnQ7aHNoaWZ0PTgtaHNoaWZ0O2hzaXplX3JlZz1IU0laRTtjbF9oYXNoKGhzaXplX3JlZyk7b3V0cHV0KENsZWFyQ29kZSxvdXRzKTtvdXRlcl9sb29wOndoaWxlKChjPW5leHRQaXhlbCgpKSE9RU9GKXtmY29kZT0oYzw8QklUUykrZW50O2k9Yzw8aHNoaWZ0XmVudDtpZihodGFiW2ldPT09ZmNvZGUpe2VudD1jb2RldGFiW2ldO2NvbnRpbnVlfWVsc2UgaWYoaHRhYltpXT49MCl7ZGlzcD1oc2l6ZV9yZWctaTtpZihpPT09MClkaXNwPTE7ZG97aWYoKGktPWRpc3ApPDApaSs9aHNpemVfcmVnO2lmKGh0YWJbaV09PT1mY29kZSl7ZW50PWNvZGV0YWJbaV07Y29udGludWUgb3V0ZXJfbG9vcH19d2hpbGUoaHRhYltpXT49MCl9b3V0cHV0KGVudCxvdXRzKTtlbnQ9YztpZihmcmVlX2VudDwxPDxCSVRTKXtjb2RldGFiW2ldPWZyZWVfZW50Kys7aHRhYltpXT1mY29kZX1lbHNle2NsX2Jsb2NrKG91dHMpfX1vdXRwdXQoZW50LG91dHMpO291dHB1dChFT0ZDb2RlLG91dHMpfWZ1bmN0aW9uIGVuY29kZShvdXRzKXtvdXRzLndyaXRlQnl0ZShpbml0Q29kZVNpemUpO3JlbWFpbmluZz13aWR0aCpoZWlnaHQ7Y3VyUGl4ZWw9MDtjb21wcmVzcyhpbml0Q29kZVNpemUrMSxvdXRzKTtvdXRzLndyaXRlQnl0ZSgwKX1mdW5jdGlvbiBmbHVzaF9jaGFyKG91dHMpe2lmKGFfY291bnQ+MCl7b3V0cy53cml0ZUJ5dGUoYV9jb3VudCk7b3V0cy53cml0ZUJ5dGVzKGFjY3VtLDAsYV9jb3VudCk7YV9jb3VudD0wfX1mdW5jdGlvbiBNQVhDT0RFKG5fYml0cyl7cmV0dXJuKDE8PG5fYml0cyktMX1mdW5jdGlvbiBuZXh0UGl4ZWwoKXtpZihyZW1haW5pbmc9PT0wKXJldHVybiBFT0Y7LS1yZW1haW5pbmc7dmFyIHBpeD1waXhlbHNbY3VyUGl4ZWwrK107cmV0dXJuIHBpeCYyNTV9ZnVuY3Rpb24gb3V0cHV0KGNvZGUsb3V0cyl7Y3VyX2FjY3VtJj1tYXNrc1tjdXJfYml0c107aWYoY3VyX2JpdHM+MCljdXJfYWNjdW18PWNvZGU8PGN1cl9iaXRzO2Vsc2UgY3VyX2FjY3VtPWNvZGU7Y3VyX2JpdHMrPW5fYml0czt3aGlsZShjdXJfYml0cz49OCl7Y2hhcl9vdXQoY3VyX2FjY3VtJjI1NSxvdXRzKTtjdXJfYWNjdW0+Pj04O2N1cl9iaXRzLT04fWlmKGZyZWVfZW50Pm1heGNvZGV8fGNsZWFyX2ZsZyl7aWYoY2xlYXJfZmxnKXttYXhjb2RlPU1BWENPREUobl9iaXRzPWdfaW5pdF9iaXRzKTtjbGVhcl9mbGc9ZmFsc2V9ZWxzZXsrK25fYml0cztpZihuX2JpdHM9PUJJVFMpbWF4Y29kZT0xPDxCSVRTO2Vsc2UgbWF4Y29kZT1NQVhDT0RFKG5fYml0cyl9fWlmKGNvZGU9PUVPRkNvZGUpe3doaWxlKGN1cl9iaXRzPjApe2NoYXJfb3V0KGN1cl9hY2N1bSYyNTUsb3V0cyk7Y3VyX2FjY3VtPj49ODtjdXJfYml0cy09OH1mbHVzaF9jaGFyKG91dHMpfX10aGlzLmVuY29kZT1lbmNvZGV9bW9kdWxlLmV4cG9ydHM9TFpXRW5jb2Rlcn0se31dLDM6W2Z1bmN0aW9uKHJlcXVpcmUsbW9kdWxlLGV4cG9ydHMpe3ZhciBuY3ljbGVzPTEwMDt2YXIgbmV0c2l6ZT0yNTY7dmFyIG1heG5ldHBvcz1uZXRzaXplLTE7dmFyIG5ldGJpYXNzaGlmdD00O3ZhciBpbnRiaWFzc2hpZnQ9MTY7dmFyIGludGJpYXM9MTw8aW50Ymlhc3NoaWZ0O3ZhciBnYW1tYXNoaWZ0PTEwO3ZhciBnYW1tYT0xPDxnYW1tYXNoaWZ0O3ZhciBiZXRhc2hpZnQ9MTA7dmFyIGJldGE9aW50Ymlhcz4+YmV0YXNoaWZ0O3ZhciBiZXRhZ2FtbWE9aW50Ymlhczw8Z2FtbWFzaGlmdC1iZXRhc2hpZnQ7dmFyIGluaXRyYWQ9bmV0c2l6ZT4+Mzt2YXIgcmFkaXVzYmlhc3NoaWZ0PTY7dmFyIHJhZGl1c2JpYXM9MTw8cmFkaXVzYmlhc3NoaWZ0O3ZhciBpbml0cmFkaXVzPWluaXRyYWQqcmFkaXVzYmlhczt2YXIgcmFkaXVzZGVjPTMwO3ZhciBhbHBoYWJpYXNzaGlmdD0xMDt2YXIgaW5pdGFscGhhPTE8PGFscGhhYmlhc3NoaWZ0O3ZhciBhbHBoYWRlYzt2YXIgcmFkYmlhc3NoaWZ0PTg7dmFyIHJhZGJpYXM9MTw8cmFkYmlhc3NoaWZ0O3ZhciBhbHBoYXJhZGJzaGlmdD1hbHBoYWJpYXNzaGlmdCtyYWRiaWFzc2hpZnQ7dmFyIGFscGhhcmFkYmlhcz0xPDxhbHBoYXJhZGJzaGlmdDt2YXIgcHJpbWUxPTQ5OTt2YXIgcHJpbWUyPTQ5MTt2YXIgcHJpbWUzPTQ4Nzt2YXIgcHJpbWU0PTUwMzt2YXIgbWlucGljdHVyZWJ5dGVzPTMqcHJpbWU0O2Z1bmN0aW9uIE5ldVF1YW50KHBpeGVscyxzYW1wbGVmYWMpe3ZhciBuZXR3b3JrO3ZhciBuZXRpbmRleDt2YXIgYmlhczt2YXIgZnJlcTt2YXIgcmFkcG93ZXI7ZnVuY3Rpb24gaW5pdCgpe25ldHdvcms9W107bmV0aW5kZXg9bmV3IEludDMyQXJyYXkoMjU2KTtiaWFzPW5ldyBJbnQzMkFycmF5KG5ldHNpemUpO2ZyZXE9bmV3IEludDMyQXJyYXkobmV0c2l6ZSk7cmFkcG93ZXI9bmV3IEludDMyQXJyYXkobmV0c2l6ZT4+Myk7dmFyIGksdjtmb3IoaT0wO2k8bmV0c2l6ZTtpKyspe3Y9KGk8PG5ldGJpYXNzaGlmdCs4KS9uZXRzaXplO25ldHdvcmtbaV09bmV3IEZsb2F0NjRBcnJheShbdix2LHYsMF0pO2ZyZXFbaV09aW50Ymlhcy9uZXRzaXplO2JpYXNbaV09MH19ZnVuY3Rpb24gdW5iaWFzbmV0KCl7Zm9yKHZhciBpPTA7aTxuZXRzaXplO2krKyl7bmV0d29ya1tpXVswXT4+PW5ldGJpYXNzaGlmdDtuZXR3b3JrW2ldWzFdPj49bmV0Ymlhc3NoaWZ0O25ldHdvcmtbaV1bMl0+Pj1uZXRiaWFzc2hpZnQ7bmV0d29ya1tpXVszXT1pfX1mdW5jdGlvbiBhbHRlcnNpbmdsZShhbHBoYSxpLGIsZyxyKXtuZXR3b3JrW2ldWzBdLT1hbHBoYSoobmV0d29ya1tpXVswXS1iKS9pbml0YWxwaGE7bmV0d29ya1tpXVsxXS09YWxwaGEqKG5ldHdvcmtbaV1bMV0tZykvaW5pdGFscGhhO25ldHdvcmtbaV1bMl0tPWFscGhhKihuZXR3b3JrW2ldWzJdLXIpL2luaXRhbHBoYX1mdW5jdGlvbiBhbHRlcm5laWdoKHJhZGl1cyxpLGIsZyxyKXt2YXIgbG89TWF0aC5hYnMoaS1yYWRpdXMpO3ZhciBoaT1NYXRoLm1pbihpK3JhZGl1cyxuZXRzaXplKTt2YXIgaj1pKzE7dmFyIGs9aS0xO3ZhciBtPTE7dmFyIHAsYTt3aGlsZShqPGhpfHxrPmxvKXthPXJhZHBvd2VyW20rK107aWYoajxoaSl7cD1uZXR3b3JrW2orK107cFswXS09YSoocFswXS1iKS9hbHBoYXJhZGJpYXM7cFsxXS09YSoocFsxXS1nKS9hbHBoYXJhZGJpYXM7cFsyXS09YSoocFsyXS1yKS9hbHBoYXJhZGJpYXN9aWYoaz5sbyl7cD1uZXR3b3JrW2stLV07cFswXS09YSoocFswXS1iKS9hbHBoYXJhZGJpYXM7cFsxXS09YSoocFsxXS1nKS9hbHBoYXJhZGJpYXM7cFsyXS09YSoocFsyXS1yKS9hbHBoYXJhZGJpYXN9fX1mdW5jdGlvbiBjb250ZXN0KGIsZyxyKXt2YXIgYmVzdGQ9figxPDwzMSk7dmFyIGJlc3RiaWFzZD1iZXN0ZDt2YXIgYmVzdHBvcz0tMTt2YXIgYmVzdGJpYXNwb3M9YmVzdHBvczt2YXIgaSxuLGRpc3QsYmlhc2Rpc3QsYmV0YWZyZXE7Zm9yKGk9MDtpPG5ldHNpemU7aSsrKXtuPW5ldHdvcmtbaV07ZGlzdD1NYXRoLmFicyhuWzBdLWIpK01hdGguYWJzKG5bMV0tZykrTWF0aC5hYnMoblsyXS1yKTtpZihkaXN0PGJlc3RkKXtiZXN0ZD1kaXN0O2Jlc3Rwb3M9aX1iaWFzZGlzdD1kaXN0LShiaWFzW2ldPj5pbnRiaWFzc2hpZnQtbmV0Ymlhc3NoaWZ0KTtpZihiaWFzZGlzdDxiZXN0Ymlhc2Qpe2Jlc3RiaWFzZD1iaWFzZGlzdDtiZXN0Ymlhc3Bvcz1pfWJldGFmcmVxPWZyZXFbaV0+PmJldGFzaGlmdDtmcmVxW2ldLT1iZXRhZnJlcTtiaWFzW2ldKz1iZXRhZnJlcTw8Z2FtbWFzaGlmdH1mcmVxW2Jlc3Rwb3NdKz1iZXRhO2JpYXNbYmVzdHBvc10tPWJldGFnYW1tYTtyZXR1cm4gYmVzdGJpYXNwb3N9ZnVuY3Rpb24gaW54YnVpbGQoKXt2YXIgaSxqLHAscSxzbWFsbHBvcyxzbWFsbHZhbCxwcmV2aW91c2NvbD0wLHN0YXJ0cG9zPTA7Zm9yKGk9MDtpPG5ldHNpemU7aSsrKXtwPW5ldHdvcmtbaV07c21hbGxwb3M9aTtzbWFsbHZhbD1wWzFdO2ZvcihqPWkrMTtqPG5ldHNpemU7aisrKXtxPW5ldHdvcmtbal07aWYocVsxXTxzbWFsbHZhbCl7c21hbGxwb3M9ajtzbWFsbHZhbD1xWzFdfX1xPW5ldHdvcmtbc21hbGxwb3NdO2lmKGkhPXNtYWxscG9zKXtqPXFbMF07cVswXT1wWzBdO3BbMF09ajtqPXFbMV07cVsxXT1wWzFdO3BbMV09ajtqPXFbMl07cVsyXT1wWzJdO3BbMl09ajtqPXFbM107cVszXT1wWzNdO3BbM109an1pZihzbWFsbHZhbCE9cHJldmlvdXNjb2wpe25ldGluZGV4W3ByZXZpb3VzY29sXT1zdGFydHBvcytpPj4xO2ZvcihqPXByZXZpb3VzY29sKzE7ajxzbWFsbHZhbDtqKyspbmV0aW5kZXhbal09aTtwcmV2aW91c2NvbD1zbWFsbHZhbDtzdGFydHBvcz1pfX1uZXRpbmRleFtwcmV2aW91c2NvbF09c3RhcnRwb3MrbWF4bmV0cG9zPj4xO2ZvcihqPXByZXZpb3VzY29sKzE7ajwyNTY7aisrKW5ldGluZGV4W2pdPW1heG5ldHBvc31mdW5jdGlvbiBpbnhzZWFyY2goYixnLHIpe3ZhciBhLHAsZGlzdDt2YXIgYmVzdGQ9MWUzO3ZhciBiZXN0PS0xO3ZhciBpPW5ldGluZGV4W2ddO3ZhciBqPWktMTt3aGlsZShpPG5ldHNpemV8fGo+PTApe2lmKGk8bmV0c2l6ZSl7cD1uZXR3b3JrW2ldO2Rpc3Q9cFsxXS1nO2lmKGRpc3Q+PWJlc3RkKWk9bmV0c2l6ZTtlbHNle2krKztpZihkaXN0PDApZGlzdD0tZGlzdDthPXBbMF0tYjtpZihhPDApYT0tYTtkaXN0Kz1hO2lmKGRpc3Q8YmVzdGQpe2E9cFsyXS1yO2lmKGE8MClhPS1hO2Rpc3QrPWE7aWYoZGlzdDxiZXN0ZCl7YmVzdGQ9ZGlzdDtiZXN0PXBbM119fX19aWYoaj49MCl7cD1uZXR3b3JrW2pdO2Rpc3Q9Zy1wWzFdO2lmKGRpc3Q+PWJlc3RkKWo9LTE7ZWxzZXtqLS07aWYoZGlzdDwwKWRpc3Q9LWRpc3Q7YT1wWzBdLWI7aWYoYTwwKWE9LWE7ZGlzdCs9YTtpZihkaXN0PGJlc3RkKXthPXBbMl0tcjtpZihhPDApYT0tYTtkaXN0Kz1hO2lmKGRpc3Q8YmVzdGQpe2Jlc3RkPWRpc3Q7YmVzdD1wWzNdfX19fX1yZXR1cm4gYmVzdH1mdW5jdGlvbiBsZWFybigpe3ZhciBpO3ZhciBsZW5ndGhjb3VudD1waXhlbHMubGVuZ3RoO3ZhciBhbHBoYWRlYz0zMCsoc2FtcGxlZmFjLTEpLzM7dmFyIHNhbXBsZXBpeGVscz1sZW5ndGhjb3VudC8oMypzYW1wbGVmYWMpO3ZhciBkZWx0YT1+fihzYW1wbGVwaXhlbHMvbmN5Y2xlcyk7dmFyIGFscGhhPWluaXRhbHBoYTt2YXIgcmFkaXVzPWluaXRyYWRpdXM7dmFyIHJhZD1yYWRpdXM+PnJhZGl1c2JpYXNzaGlmdDtpZihyYWQ8PTEpcmFkPTA7Zm9yKGk9MDtpPHJhZDtpKyspcmFkcG93ZXJbaV09YWxwaGEqKChyYWQqcmFkLWkqaSkqcmFkYmlhcy8ocmFkKnJhZCkpO3ZhciBzdGVwO2lmKGxlbmd0aGNvdW50PG1pbnBpY3R1cmVieXRlcyl7c2FtcGxlZmFjPTE7c3RlcD0zfWVsc2UgaWYobGVuZ3RoY291bnQlcHJpbWUxIT09MCl7c3RlcD0zKnByaW1lMX1lbHNlIGlmKGxlbmd0aGNvdW50JXByaW1lMiE9PTApe3N0ZXA9MypwcmltZTJ9ZWxzZSBpZihsZW5ndGhjb3VudCVwcmltZTMhPT0wKXtzdGVwPTMqcHJpbWUzfWVsc2V7c3RlcD0zKnByaW1lNH12YXIgYixnLHIsajt2YXIgcGl4PTA7aT0wO3doaWxlKGk8c2FtcGxlcGl4ZWxzKXtiPShwaXhlbHNbcGl4XSYyNTUpPDxuZXRiaWFzc2hpZnQ7Zz0ocGl4ZWxzW3BpeCsxXSYyNTUpPDxuZXRiaWFzc2hpZnQ7cj0ocGl4ZWxzW3BpeCsyXSYyNTUpPDxuZXRiaWFzc2hpZnQ7aj1jb250ZXN0KGIsZyxyKTthbHRlcnNpbmdsZShhbHBoYSxqLGIsZyxyKTtpZihyYWQhPT0wKWFsdGVybmVpZ2gocmFkLGosYixnLHIpO3BpeCs9c3RlcDtpZihwaXg+PWxlbmd0aGNvdW50KXBpeC09bGVuZ3RoY291bnQ7aSsrO2lmKGRlbHRhPT09MClkZWx0YT0xO2lmKGklZGVsdGE9PT0wKXthbHBoYS09YWxwaGEvYWxwaGFkZWM7cmFkaXVzLT1yYWRpdXMvcmFkaXVzZGVjO3JhZD1yYWRpdXM+PnJhZGl1c2JpYXNzaGlmdDtpZihyYWQ8PTEpcmFkPTA7Zm9yKGo9MDtqPHJhZDtqKyspcmFkcG93ZXJbal09YWxwaGEqKChyYWQqcmFkLWoqaikqcmFkYmlhcy8ocmFkKnJhZCkpfX19ZnVuY3Rpb24gYnVpbGRDb2xvcm1hcCgpe2luaXQoKTtsZWFybigpO3VuYmlhc25ldCgpO2lueGJ1aWxkKCl9dGhpcy5idWlsZENvbG9ybWFwPWJ1aWxkQ29sb3JtYXA7ZnVuY3Rpb24gZ2V0Q29sb3JtYXAoKXt2YXIgbWFwPVtdO3ZhciBpbmRleD1bXTtmb3IodmFyIGk9MDtpPG5ldHNpemU7aSsrKWluZGV4W25ldHdvcmtbaV1bM11dPWk7dmFyIGs9MDtmb3IodmFyIGw9MDtsPG5ldHNpemU7bCsrKXt2YXIgaj1pbmRleFtsXTttYXBbaysrXT1uZXR3b3JrW2pdWzBdO21hcFtrKytdPW5ldHdvcmtbal1bMV07bWFwW2srK109bmV0d29ya1tqXVsyXX1yZXR1cm4gbWFwfXRoaXMuZ2V0Q29sb3JtYXA9Z2V0Q29sb3JtYXA7dGhpcy5sb29rdXBSR0I9aW54c2VhcmNofW1vZHVsZS5leHBvcnRzPU5ldVF1YW50fSx7fV0sNDpbZnVuY3Rpb24ocmVxdWlyZSxtb2R1bGUsZXhwb3J0cyl7dmFyIEdJRkVuY29kZXIscmVuZGVyRnJhbWU7R0lGRW5jb2Rlcj1yZXF1aXJlKCIuL0dJRkVuY29kZXIuanMiKTtyZW5kZXJGcmFtZT1mdW5jdGlvbihmcmFtZSl7dmFyIGVuY29kZXIscGFnZSxzdHJlYW0sdHJhbnNmZXI7ZW5jb2Rlcj1uZXcgR0lGRW5jb2RlcihmcmFtZS53aWR0aCxmcmFtZS5oZWlnaHQpO2lmKGZyYW1lLmluZGV4PT09MCl7ZW5jb2Rlci53cml0ZUhlYWRlcigpfWVsc2V7ZW5jb2Rlci5maXJzdEZyYW1lPWZhbHNlfWVuY29kZXIuc2V0VHJhbnNwYXJlbnQoZnJhbWUudHJhbnNwYXJlbnQpO2VuY29kZXIuc2V0UmVwZWF0KGZyYW1lLnJlcGVhdCk7ZW5jb2Rlci5zZXREZWxheShmcmFtZS5kZWxheSk7ZW5jb2Rlci5zZXRRdWFsaXR5KGZyYW1lLnF1YWxpdHkpO2VuY29kZXIuc2V0RGl0aGVyKGZyYW1lLmRpdGhlcik7ZW5jb2Rlci5zZXRHbG9iYWxQYWxldHRlKGZyYW1lLmdsb2JhbFBhbGV0dGUpO2VuY29kZXIuYWRkRnJhbWUoZnJhbWUuZGF0YSk7aWYoZnJhbWUubGFzdCl7ZW5jb2Rlci5maW5pc2goKX1pZihmcmFtZS5nbG9iYWxQYWxldHRlPT09dHJ1ZSl7ZnJhbWUuZ2xvYmFsUGFsZXR0ZT1lbmNvZGVyLmdldEdsb2JhbFBhbGV0dGUoKX1zdHJlYW09ZW5jb2Rlci5zdHJlYW0oKTtmcmFtZS5kYXRhPXN0cmVhbS5wYWdlcztmcmFtZS5jdXJzb3I9c3RyZWFtLmN1cnNvcjtmcmFtZS5wYWdlU2l6ZT1zdHJlYW0uY29uc3RydWN0b3IucGFnZVNpemU7aWYoZnJhbWUuY2FuVHJhbnNmZXIpe3RyYW5zZmVyPWZ1bmN0aW9uKCl7dmFyIGksbGVuLHJlZixyZXN1bHRzO3JlZj1mcmFtZS5kYXRhO3Jlc3VsdHM9W107Zm9yKGk9MCxsZW49cmVmLmxlbmd0aDtpPGxlbjtpKyspe3BhZ2U9cmVmW2ldO3Jlc3VsdHMucHVzaChwYWdlLmJ1ZmZlcil9cmV0dXJuIHJlc3VsdHN9KCk7cmV0dXJuIHNlbGYucG9zdE1lc3NhZ2UoZnJhbWUsdHJhbnNmZXIpfWVsc2V7cmV0dXJuIHNlbGYucG9zdE1lc3NhZ2UoZnJhbWUpfX07c2VsZi5vbm1lc3NhZ2U9ZnVuY3Rpb24oZXZlbnQpe3JldHVybiByZW5kZXJGcmFtZShldmVudC5kYXRhKX19LHsiLi9HSUZFbmNvZGVyLmpzIjoxfV19LHt9LFs0XSk7Ci8vIyBzb3VyY2VNYXBwaW5nVVJMPWdpZi53b3JrZXIuanMubWFwCg==";
+let recording=false;
+const recBtn=document.getElementById('rec');
+const setRec = html => { document.getElementById('status').innerHTML = html; };
+function makeWorkerUrl(){
+  const src=atob(GIF_WORKER_B64);
+  return URL.createObjectURL(new Blob([src],{type:'application/javascript'}));
+}
+recBtn.addEventListener('click',()=>{
+  if(recording) return;
+  if(typeof GIF==='undefined'){ setRec('<b style="color:var(--red)">gif.js failed to load — keep vendor/gif.js next to this file.</b>'); return; }
+  recording=true; recBtn.disabled=true;
+  const wasPlaying=state.playing; state.playing=true; state.lastReal=performance.now();
+  const scale=0.66, fps=15, secs=3, total=fps*secs;
+  const gif=new GIF({workers:2, quality:10, workerScript:makeWorkerUrl(),
+    width:Math.round(W*scale), height:Math.round(H*scale), background:'#060b11'});
+  const off=document.createElement('canvas');
+  off.width=Math.round(W*scale); off.height=Math.round(H*scale);
+  const ox=off.getContext('2d');
+  const fname='wake-wall-'+state.mode+'-'+state.x+'us.gif';
+  let grabbed=0;
+  const grab=()=>{
+    ox.drawImage(C,0,0,off.width,off.height);
+    gif.addFrame(ox,{copy:true,delay:1000/fps});
+    grabbed++;
+    setRec('Recording… frame '+grabbed+'/'+total);
+    if(grabbed<total){ setTimeout(()=>requestAnimationFrame(grab), 1000/fps); }
+    else finish();
+  };
+  function finish(){
+    setRec('Encoding GIF…');
+    gif.on('progress',p=>setRec('Encoding GIF… '+Math.round(p*100)+'%'));
+    gif.on('finished',blob=>{
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url; a.download=fname; a.click();
+      URL.revokeObjectURL(url);
+      recording=false; recBtn.disabled=false; state.playing=wasPlaying;
+      setRec('<b>Saved '+fname+'</b> — drop it straight into a slide.');
+    });
+    gif.render();
+  }
+  setRec('Recording 3s · '+state.mode+' · '+state.x+'µs…');
+  requestAnimationFrame(grab);
+});
+})();
+</script>
+</body>
+</html>

@@ -169,6 +169,15 @@ casual, technical, direct. No corporate hedging, no marketing voice.
   AGING chips; `drawSafety` safe-V window flashes on ripple overshoot. Constants in `cfg`.
 - Validated all of the above headlessly (Chrome `--virtual-time-budget`; glitch
   injected via a temp `setTimeout` in throwaway copies since `state` is closure-scoped).
+- **Wake-wall page** (`wake-wall.html`) — the low-power M7 beats every 1–100 µs and
+  kicks data upstairs; the rest-of-SoC answers in **SUSPEND** (10 ms wake WALL:
+  PLL→V-ramp→clk→cache→first-word) or **IDLE** (~cycle time). Three lessons: beat
+  rate goes *invisible* behind the wall in suspend but *becomes* the whole latency
+  in idle; the mailbox FIFO backlog (`10000/X`) overflows at fast beats; and the
+  energy **break-even ~244 ms** below which suspend is slower AND hungrier than idle
+  (each wake = 340 mW × 10 ms spike). Five bands (floorplan / to-scale latency budget
+  with a crawling playhead + log compare / FIFO / energy / metrics). Same recipe +
+  the file:// GIF recorder. Cross-linked from `index.html` and `dual-core.html`.
 
 ---
 TTA
