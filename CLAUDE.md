@@ -178,6 +178,16 @@ casual, technical, direct. No corporate hedging, no marketing voice.
   (each wake = 340 mW × 10 ms spike). Five bands (floorplan / to-scale latency budget
   with a crawling playhead + log compare / FIFO / energy / metrics). Same recipe +
   the file:// GIF recorder. Cross-linked from `index.html` and `dual-core.html`.
+- **Wake-wall legibility pass** — the honest paradox: at true scale the 10 ms wall is
+  99.9% of the bar, so the ~8 µs of real work is *sub-pixel* (spatial flash) AND
+  *sub-frame* (temporal flash). Fixed both: the latency bar is now a **broken axis**
+  (wall compressed behind a `drawBreak` glyph, every block labeled with its true
+  duration; the real 10 000× gap is preserved in the log strip below it), the
+  animation is **phase-paced** (`phaseSpeed()` crawls the wall but slows to ~0.55 s
+  through the work; 0.8 s `state.dwell` freeze on ✓ DELIVERED), and a plain-English
+  **narration line** says which step you're in (with a live wall countdown).
+  *Don't "fix" the not-to-scale bar — that NOT-to-scale-ness IS the fix* (same spirit
+  as the sub-pixel ADC-LSB note above).
 
 ---
 TTA

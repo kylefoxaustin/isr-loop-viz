@@ -219,7 +219,8 @@ const state = {
   ev: null,                      // current event lifecycle (see fireEvent)
   nextFire: 50,                  // when to spawn the next demo event
   lostSamples: 0,
-  flashKick: -1e9
+  flashKick: -1e9,
+  dwell: 0, lastPhase: 'none'   // animation pacing: freeze on the key instants
 };
 
 // ---- spawn an event at virtual time t and compute its whole lifecycle ----
@@ -270,6 +271,16 @@ function advance(dtv){
   // skip dead air: if we're idling far from the next event, jump close to it
   if(!state.ev && state.nextFire - state.vtime > cfg.visualGapUs)
     state.vtime = state.nextFire - cfg.visualGapUs;
+}
+
+// animation pacing: crawl the 10 ms wall, but SLOW WAY DOWN through the few µs
+// of real work (otherwise it's a sub-frame flash the eye can't catch).
+function phaseSpeed(){
+  const ph = state.ev ? evPhase() : 'none';
+  if(ph==='blind')   return Math.min(state.speed, Math.max(2, state.x/0.4)); // catch over ~0.4s
+  if(ph==='grab')    return Math.max(0.05, cfg.idleRespUs/0.3);              // ~0.3s near-freeze
+  if(ph==='process') return cfg.processUs/0.55;                             // work over ~0.55s
+  return state.speed;                                                       // wall / holdoff / idle
 }
 
 // ===========================================================================
@@ -429,70 +440,112 @@ function arrow(x1,y1,x2,y2,c){
   X.closePath(); X.fillStyle=c; X.fill();
 }
 
-// ---- band 2: latency budget (to scale) + log comparison --------------------
+// ---- band 2: latency budget (BROKEN AXIS) + narration + log comparison -----
+// The honest tension: on a true-scale bar the 10 ms wall is 99.9% of the width
+// and the µs of real work is sub-pixel — invisible. So this bar is deliberately
+// NOT to scale: each segment gets readable width + its true duration label, the
+// wall is compressed behind a visible break, and the real 10 000× gap lives in
+// the log strip below. The animation then SLOWS through the work so it reads.
+function blockLabel(x1,x2,y,h,title,sub,c){
+  if(x2-x1<26) return;
+  X.textAlign='center';
+  X.fillStyle=c; X.font='700 10px '+FONT; X.fillText(title,(x1+x2)/2, y+h/2-1);
+  if(x2-x1>72){ X.font='8px '+FONT; X.globalAlpha=.85; X.fillText(sub,(x1+x2)/2, y+h/2+11); X.globalAlpha=1; }
+}
+function drawBreak(cx,y,h){           // an axis-break glyph: "this block is compressed"
+  X.fillStyle=COL.bg; X.fillRect(cx-6,y-1,12,h+2);
+  X.strokeStyle=COL.amber; X.lineWidth=1.5;
+  for(const off of [-3,3]){
+    X.beginPath(); X.moveTo(cx+off,y-1);
+    X.lineTo(cx+off-3,y+h*0.35); X.lineTo(cx+off+3,y+h*0.65); X.lineTo(cx+off,y+h+1);
+    X.stroke();
+  }
+}
 function drawTimeline(){
   const b=bands.time, x=10, w=W-20;
-  panel(x, b.y, w, b.h, null, state.mode==='suspend'?COL.red:COL.green);
+  const susp = state.mode==='suspend';
+  panel(x, b.y, w, b.h, null, susp?COL.red:COL.green);
   const e = state.ev;
-  X.textAlign='left'; X.font='10px '+FONT; X.fillStyle=COL.dim;
-  X.fillText('LATENCY BUDGET · event → first word → delivered  (drawn TO SCALE — the bar rescales when you change the SoC state)', x+12, b.y+15);
-
-  const PADL=x+18, PADR=x+w-18, barY=b.y+44, barH=34;
-  // use the live event if present, else a frozen representative one
   const cap = e ? e.capActual : captureWorst();
   const resp = respUs();
   const total = cap + resp + cfg.processUs;
-  const sx = v => PADL + (v/total)*(PADR-PADL);   // 0..total → x
+  const ph = e ? evPhase() : 'none';
 
-  // segment: blind/capture
-  let cx=PADL;
-  seg(cx, sx(cap), barY, barH, 'rgba(255,93,108,0.30)', COL.red, 'ADC blind ≤'+fmtUs(cap));
-  cx = sx(cap);
-  // segment: response (wake wall or instant grab)
-  if(state.mode==='suspend'){
-    // subdivide the 10 ms wall into phases
-    let pcx=cx;
+  X.textAlign='left'; X.font='10px '+FONT; X.fillStyle=COL.dim;
+  X.fillText('LATENCY BUDGET · widths NOT to scale (stretched so the µs of real work is visible) · the true 10 000× gap is on the log axis below', x+12, b.y+15);
+
+  // ---- narration: plain-English "what is happening right now" ------------
+  let nMsg, nC;
+  if(ph==='blind'){ nC=COL.amber; nMsg='① event arrived — the M7 catches it on its next beat (within '+fmtUs(cap)+')'; }
+  else if(ph==='waking'){ nC=COL.red; nMsg='② SoC waking up… '+fmtUs(Math.max(0,e.tFirst-state.vtime))+' of the 10 ms wall still to go'; }
+  else if(ph==='grab'){ nC=COL.green; nMsg='② SoC was idle — grabbed the payload in ~1 cycle, no wall'; }
+  else if(ph==='process'){ nC=COL.violet; nMsg='③ ⚡ outer M7 actually WORKING — only '+fmtUs(cfg.processUs)+' of real compute'; }
+  else if(ph==='holdoff'){ nC=COL.green; nMsg='✓ delivered after '+fmtUs(e.tDone-e.t)+' — and just '+fmtUs(cfg.processUs)+' of that was real work'; }
+  else { nC=COL.dim; nMsg='— idle · waiting for the next event —'; }
+  X.font='700 13px '+FONT; X.fillStyle=nC; X.textAlign='left'; X.fillText(nMsg, x+12, b.y+34);
+
+  // ---- broken-axis budget bar -------------------------------------------
+  const PADL=x+18, PADR=x+w-18, usable=PADR-PADL, barY=b.y+52, barH=30;
+  let capF, wallF, procF;
+  if(susp){ capF=0.20; wallF=0.54; procF=0.26; } else { capF=0.58; wallF=0.06; procF=0.36; }
+  const xc0=PADL, xc1=PADL+usable*capF, xw1=xc1+usable*wallF, xp1=xw1+usable*procF;
+
+  // capture block
+  X.fillStyle='rgba(255,93,108,0.26)'; X.fillRect(xc0,barY,xc1-xc0,barH);
+  X.strokeStyle=COL.red; X.lineWidth=1; X.strokeRect(xc0,barY,xc1-xc0,barH);
+  blockLabel(xc0,xc1,barY,barH,'CATCH','blind ≤'+fmtUs(cap),COL.red);
+
+  // response block: compressed wall (suspend) or thin grab (idle)
+  if(susp){
+    let pcx=xc1; const wWidth=xw1-xc1;
     cfg.phases.forEach(p=>{
-      const pw=(p.f*resp/total)*(PADR-PADL);
-      X.fillStyle=p.c; X.globalAlpha=.85; X.fillRect(pcx, barY, Math.max(1,pw), barH); X.globalAlpha=1;
-      X.strokeStyle='rgba(6,11,17,0.6)'; X.lineWidth=1; X.strokeRect(pcx,barY,Math.max(1,pw),barH);
-      if(pw>52){ X.fillStyle='#1a1304'; X.font='700 9px '+FONT; X.textAlign='center';
+      const pw=p.f*wWidth;
+      X.fillStyle=p.c; X.globalAlpha=.85; X.fillRect(pcx,barY,pw,barH); X.globalAlpha=1;
+      X.strokeStyle='rgba(6,11,17,0.55)'; X.lineWidth=1; X.strokeRect(pcx,barY,pw,barH);
+      if(pw>46){ X.fillStyle='#1a1304'; X.font='700 8.5px '+FONT; X.textAlign='center';
         X.fillText(p.name, pcx+pw/2, barY+barH/2+3); }
       pcx+=pw;
     });
+    drawBreak((xc1+xw1)/2, barY, barH);
     X.fillStyle=COL.amber; X.font='700 10px '+FONT; X.textAlign='center';
-    X.fillText('◄ 10 ms WAKE WALL ►', (cx+sx(cap+resp))/2, barY-6);
+    X.fillText('◄ 10 ms WAKE WALL · compressed ►', (xc1+xw1)/2, barY-6);
   } else {
-    const gw=sx(cap+resp)-cx;
-    X.fillStyle=COL.green; X.fillRect(cx,barY,Math.max(2,gw),barH);
-    X.fillStyle=COL.green; X.font='700 9px '+FONT; X.textAlign='left';
-    X.fillText('grab ~1 cycle', cx+4, barY-6);
+    X.fillStyle=COL.green; X.globalAlpha=.85; X.fillRect(xc1,barY,xw1-xc1,barH); X.globalAlpha=1;
+    X.strokeStyle=COL.green; X.lineWidth=1; X.strokeRect(xc1,barY,xw1-xc1,barH);
+    X.fillStyle=COL.green; X.font='700 9px '+FONT; X.textAlign='center';
+    X.fillText('grab ~1 cycle', (xc1+xw1)/2, barY-6);
   }
-  cx=sx(cap+resp);
-  seg(cx, sx(total), barY, barH, 'rgba(199,125,255,0.45)', COL.violet, 'process');
 
-  // playhead — the satisfying part: it crawls the wall in suspend, zips in idle
+  // process block — pulse it so the "real work" registers as an event, not a flash
+  const working = ph==='process';
+  const pulse = working ? 0.55+0.45*Math.abs(Math.sin(state.vtime*0.7)) : 0.45;
+  X.fillStyle='rgba(199,125,255,'+pulse.toFixed(3)+')'; X.fillRect(xw1,barY,xp1-xw1,barH);
+  X.strokeStyle=COL.violet; X.lineWidth=working?2:1; X.strokeRect(xw1,barY,xp1-xw1,barH);
+  if(working){ X.strokeStyle=COL.violet; X.globalAlpha=.4; X.lineWidth=4;
+    X.strokeRect(xw1-2,barY-2,xp1-xw1+4,barH+4); X.globalAlpha=1; }
+  blockLabel(xw1,xp1,barY,barH, working?'⚡ WORK':'WORK', fmtUs(cfg.processUs)+' compute', '#160a20');
+
+  // delivered flag (label right-aligned to the flag so it never clips the panel)
+  const delivered = ph==='holdoff';
+  X.strokeStyle=delivered?COL.green:COL.line; X.lineWidth=delivered?2:1;
+  X.beginPath(); X.moveTo(xp1,barY-10); X.lineTo(xp1,barY+barH+8); X.stroke();
+  X.fillStyle=delivered?COL.green:COL.dim; X.font='700 9px '+FONT; X.textAlign='right';
+  X.fillText((delivered?'✓ delivered':'delivered')+' ▸', xp1-3, barY-2);
+
+  // playhead via the same piecewise map → it crawls the wall then sweeps the work
   if(e){
-    const elapsed = Math.max(0, Math.min(total, state.vtime - e.t));
-    const px = sx(elapsed);
+    const el=Math.max(0,Math.min(total, state.vtime-e.t));
+    let px;
+    if(el<=cap)            px=xc0+(el/cap)*(xc1-xc0);
+    else if(el<=cap+resp)  px=xc1+((el-cap)/resp)*(xw1-xc1);
+    else                   px=xw1+((el-cap-resp)/cfg.processUs)*(xp1-xw1);
     X.strokeStyle=COL.cyan; X.lineWidth=2;
-    X.beginPath(); X.moveTo(px, barY-12); X.lineTo(px, barY+barH+10); X.stroke();
-    X.fillStyle=COL.cyan; X.beginPath();
-    X.moveTo(px,barY-12); X.lineTo(px-4,barY-18); X.lineTo(px+4,barY-18); X.closePath(); X.fill();
-    X.fillStyle=COL.cyan; X.font='700 10px '+FONT; X.textAlign='center';
-    const phl = evPhase();
-    const lab = phl==='blind'?'+'+fmtUs(elapsed)+' · blind'
-              : phl==='waking'?'+'+fmtUs(elapsed)+' · still waking'
-              : (phl==='process'||phl==='grab')?'+'+fmtUs(elapsed)+' · processing'
-              : phl==='holdoff'?'delivered at +'+fmtUs(e.tDone-e.t)
-              : 'delivered at +'+fmtUs(e.tDone-e.t);
-    X.fillText(lab, Math.max(PADL+30,Math.min(PADR-30,px)), barY+barH+24);
+    X.beginPath(); X.moveTo(px,barY-13); X.lineTo(px,barY+barH+12); X.stroke();
+    X.fillStyle=COL.cyan; X.beginPath(); X.moveTo(px,barY-13); X.lineTo(px-4,barY-19); X.lineTo(px+4,barY-19); X.closePath(); X.fill();
+    X.beginPath(); X.arc(px,barY+barH/2,3,0,7); X.fill();
+    X.font='9px '+FONT; X.textAlign='center';
+    X.fillText('+'+fmtUs(el), Math.max(PADL+22,Math.min(PADR-22,px)), barY+barH+24);
   }
-  // axis caption
-  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='right';
-  X.fillText('axis: 0 … '+fmtUs(total), PADR, barY+barH+24);
-  X.textAlign='left';
-  X.fillText('0', PADL, barY+barH+24);
 
   // --- log-scale comparison: BOTH modes, always on screen (the 10 000× gap) ---
   const ly=b.y+b.h-30, lx0=PADL, lx1=PADR;
@@ -519,12 +572,6 @@ function drawTimeline(){
   mark(iT, COL.green, 'IDLE '+fmtUs(iT));
   mark(sT, COL.red,   'SUSPEND '+fmtUs(sT));
   X.textAlign='left';
-}
-function seg(x1,x2,y,h,fill,stroke,label){
-  X.fillStyle=fill; X.fillRect(x1,y,Math.max(1,x2-x1),h);
-  X.strokeStyle=stroke; X.lineWidth=1; X.strokeRect(x1,y,Math.max(1,x2-x1),h);
-  if(x2-x1>40){ X.fillStyle=stroke; X.font='8.5px '+FONT; X.textAlign='center';
-    X.fillText(label,(x1+x2)/2,y+h/2+3); }
 }
 
 // ---- band 3: beat comb + FIFO backlog (real beat spacing) ------------------
@@ -664,12 +711,18 @@ function drawMeta(){
 }
 
 function frame(now){
+  if(!state.lastReal) state.lastReal=now;
+  let dt=(now-state.lastReal)/1000; state.lastReal=now;
+  dt=Math.min(dt,0.05);
   if(state.playing){
-    if(!state.lastReal) state.lastReal=now;
-    let dt=(now-state.lastReal)/1000; state.lastReal=now;
-    dt=Math.min(dt,0.05);
-    advance(dt*state.speed);
-  } else { state.lastReal=now; }
+    if(state.dwell>0){ state.dwell-=dt; }       // frozen on a key instant (e.g. DELIVERED)
+    else advance(dt*phaseSpeed());
+    const ph = state.ev ? evPhase() : 'none';
+    if(ph!==state.lastPhase){
+      if(ph==='holdoff') state.dwell=0.8;       // hold on ✓ DELIVERED so it isn't a flash
+      state.lastPhase=ph;
+    }
+  }
   X.clearRect(0,0,W,H);
   X.fillStyle=COL.bg; X.fillRect(0,0,W,H);
   drawTopo();
@@ -689,7 +742,7 @@ function wireSeg(id, attr, fn){
     fn(btn.dataset[attr]);
   });
 }
-function resetEvent(){ state.ev=null; state.nextFire=state.vtime+120; }
+function resetEvent(){ state.ev=null; state.nextFire=state.vtime+120; state.dwell=0; state.lastPhase='none'; }
 wireSeg('mode','mode', v=>{ state.mode=v; resetEvent(); status(); });
 wireSeg('beat','x', v=>{ state.x=+v; resetEvent(); status(); });
 wireSeg('rate','g', v=>{ state.g=+v; status(); });
