@@ -229,7 +229,8 @@ const state = {
   nextFire: 50,                  // when to spawn the next demo event
   lostSamples: 0,
   flashKick: -1e9,
-  dwell: 0, lastPhase: 'none'   // animation pacing: freeze on the key instants
+  dwell: 0, lastPhase: 'none',  // animation pacing: freeze on the key instants
+  scopeScroll: 0                // duty-cycle scope scroll position (cycles)
 };
 
 // ---- spawn an event at virtual time t and compute its whole lifecycle ----
@@ -339,9 +340,8 @@ function batchAvgMw(){ const d=batchDuty(); return cfg.pActive*d + cfg.pSuspend*
 const bands = {
   topo:  { y: 10,  h: 148 },
   time:  { y: 166, h: 168 },
-  back:  { y: 342, h: 116 },
-  enrg:  { y: 466, h: 96  },
-  meta:  { y: 570, h: 158 }
+  duty:  { y: 342, h: 210 },
+  meta:  { y: 560, h: 158 }
 };
 function panel(x,y,w,h,label,accent){
   X.save();
@@ -594,84 +594,96 @@ function drawTimeline(){
   X.textAlign='left';
 }
 
-// ---- band 3: M7 TCM buffering → suspend duty-cycle (latency-for-power) ------
-function drawBacklog(){
-  const b=bands.back, x=10, w=W-20;
-  panel(x, b.y, w, b.h, 'M7 TCM BUFFER · 512 KB · the M7 hoards keep-alive samples here so the SoC can stay SUSPENDED and wake only to drain — batching trades latency for power', COL.cyan);
-  const PADL=x+18, rx=x+w-256;
-  const tb=tBufUs(), duty=batchDuty(), avg=batchAvgMw();
-  const SP=sx=>PADL+(x+w-276-PADL)*sx;     // helper: fraction → x across the left strip
-  const stripR = x+w-276;
+// ---- band 3: DUTY-CYCLE scope — TCM fill + power(t) + live average ----------
+// The meat, animated. Top lane: TCM occupancy sawtooth (fills while suspended,
+// drains at each wake). Bottom lane: rest-of-SoC power on a LOG axis (so the
+// 0.05 mW floor, 14 mW idle, and 340 mW wake spike are all legible at once),
+// with the live AVERAGE-power line — the number that actually matters. Suspend =
+// spiky fill/drain rhythm with a low average; idle = flat 14 mW. Time axis is
+// representative (fixed 2.5 cycles shown); the real durations are labelled.
+function avgPower(){ return state.mode==='suspend' ? batchAvgMw() : cfg.pIdle+0.6; }
+function drawDutyScope(){
+  const b=bands.duty, x=10, w=W-20;
+  const susp = state.mode==='suspend';
+  panel(x, b.y, w, b.h, 'DUTY-CYCLE · TCM fills while suspended → SoC wakes to drain · watch the AVERAGE-power line — suspend sleeps cheap, idle idles costly', susp?COL.green:COL.amber);
 
-  // duty-cycle mini-strip (NOT to scale — the wake is ~hundreds× shorter than the sleep)
-  const sy=b.y+32, sh=18;
-  X.fillStyle='rgba(70,224,138,0.20)'; X.fillRect(SP(0),sy,(stripR-PADL)*0.84,sh);
-  X.strokeStyle=COL.green; X.lineWidth=1; X.strokeRect(SP(0),sy,(stripR-PADL)*0.84,sh);
-  X.fillStyle=COL.green; X.font='700 9px '+FONT; X.textAlign='center';
-  X.fillText('SUSPENDED — M7 fills TCM', SP(0)+(stripR-PADL)*0.42, sy+12);
-  const wx=SP(0)+(stripR-PADL)*0.84;
-  X.fillStyle=COL.red; X.fillRect(wx,sy,(stripR-PADL)*0.06,sh);
-  X.fillStyle='rgba(199,125,255,0.45)'; X.fillRect(wx+(stripR-PADL)*0.06,sy,(stripR-PADL)*0.10,sh);
-  X.fillStyle=COL.red;   X.font='700 8px '+FONT; X.fillText('wake', wx+(stripR-PADL)*0.03, sy-4);
-  X.fillStyle=COL.violet;X.fillText('drain', wx+(stripR-PADL)*0.11, sy+12);
-  X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='left';
-  X.fillText('one duty cycle (widths not to scale) — repeats forever', PADL, sy+sh+12);
+  const plotL=x+50, plotR=x+w-176, rx=x+w-166;
+  const tcmTop=b.y+36, tcmH=38, tcmBot=tcmTop+tcmH;
+  const pwrTop=b.y+102, pwrBot=b.y+196;
+  const cyclesShown=2.5, wf=0.12;
+  const logPy=p=>{ const f=Math.max(0,Math.min(1,(Math.log10(Math.max(1e-3,p))+2)/5)); return pwrBot-f*(pwrBot-pwrTop); };
+  const waveAt=u=>{
+    const ph=u-Math.floor(u);
+    if(!susp){ const blip=ph<0.035; return {tcm:0, pwr:blip?cfg.pActive*0.5:cfg.pIdle, wake:blip}; }
+    if(ph<1-wf) return {tcm:ph/(1-wf), pwr:cfg.pSuspend, wake:false};
+    const f=(ph-(1-wf))/wf; return {tcm:Math.max(0,1-f*1.5), pwr:cfg.pActive, wake:true};
+  };
 
-  // TCM fill bar — the M7 wakes the SoC as the TCM nears full
-  const fy=sy+42;
+  // ---- TCM lane ----
   X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left';
-  X.fillText('TCM occupancy', PADL, fy-5);
-  X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(PADL, fy, stripR-PADL, 16);
-  X.fillStyle=COL.cyan; X.globalAlpha=.55; X.fillRect(PADL+1, fy+1, (stripR-PADL-2)*0.9, 14); X.globalAlpha=1;
-  X.fillStyle=COL.cyan; X.font='8px '+FONT; X.textAlign='right'; X.fillText('512 KB → wake to drain', stripR-4, fy+12);
+  X.fillText('TCM 512 KB', x+8, tcmTop-4);
+  X.strokeStyle=COL.grid; X.lineWidth=1; X.strokeRect(plotL,tcmTop,plotR-plotL,tcmH);
+  // filled sawtooth
+  X.beginPath(); X.moveTo(plotL,tcmBot);
+  for(let px=plotL;px<=plotR;px++){ const u=(px-plotL)/(plotR-plotL)*cyclesShown+state.scopeScroll;
+    X.lineTo(px, tcmBot-waveAt(u).tcm*tcmH); }
+  X.lineTo(plotR,tcmBot); X.closePath();
+  X.fillStyle='rgba(53,208,255,0.18)'; X.fill();
+  X.strokeStyle=COL.cyan; X.lineWidth=1.5; X.beginPath();
+  for(let px=plotL;px<=plotR;px++){ const u=(px-plotL)/(plotR-plotL)*cyclesShown+state.scopeScroll;
+    const y=tcmBot-waveAt(u).tcm*tcmH; px===plotL?X.moveTo(px,y):X.lineTo(px,y); }
+  X.stroke();
+  if(!susp){ X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='center';
+    X.fillText('idle — drained live, never fills', (plotL+plotR)/2, tcmTop+tcmH/2+3); }
 
-  // readouts (right)
-  const payoff = tb > 20*cfg.wakeUs;
-  X.textAlign='left';
-  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('MAX SUSPEND WINDOW', rx, b.y+24);
-  X.fillStyle=COL.green; X.font='700 24px '+FONT; X.fillText(fmtUs(tb), rx, b.y+50);
-  X.fillStyle=COL.dim; X.font='8.5px '+FONT;
-  X.fillText('512 KB / 2 B / '+state.x+' µs beat', rx, b.y+66);
-  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('SUSPEND DUTY', rx, b.y+84);
-  X.fillStyle=payoff?COL.green:COL.amber; X.font='700 13px '+FONT;
-  X.fillText((duty*100<1?(duty*100).toFixed(2):(duty*100).toFixed(1))+'% awake → '+avg.toFixed(1)+' mW', rx+78, b.y+85);
-  X.fillStyle=COL.amber; X.font='8.5px '+FONT;
-  X.fillText('⤷ latency cost: data waits up to '+fmtUs(tb), rx, b.y+102);
-}
+  // ---- power lane (log) ----
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left';
+  X.fillText('SoC power', x+8, pwrTop-4);
+  [0.1,1,10,100].forEach(p=>{ const y=logPy(p); X.strokeStyle=COL.grid; X.lineWidth=1;
+    X.beginPath(); X.moveTo(plotL,y); X.lineTo(plotR,y); X.stroke();
+    X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='right'; X.fillText(p<1?p+'':p+'', plotL-4, y+3); });
+  X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='right'; X.fillText('mW', plotL-4, pwrTop+2);
+  // power trace, colored by region
+  let pX=null,pY=null;
+  for(let px=plotL;px<=plotR;px++){ const u=(px-plotL)/(plotR-plotL)*cyclesShown+state.scopeScroll;
+    const v=waveAt(u), y=logPy(v.pwr);
+    if(pX!==null){ X.strokeStyle=v.wake?COL.red:(susp?COL.green:COL.cyan); X.lineWidth=2;
+      X.beginPath(); X.moveTo(pX,pY); X.lineTo(px,y); X.stroke(); }
+    pX=px; pY=y; }
+  // spike annotation
+  if(susp){ X.fillStyle=COL.red; X.font='8px '+FONT; X.textAlign='left';
+    X.fillText('▲ 340 mW wake (10 ms — width not to scale)', plotL+4, pwrTop+10); }
 
-// ---- band 4: energy --------------------------------------------------------
-function drawEnergy(){
-  const b=bands.enrg, x=10, w=W-20;
-  panel(x, b.y, w, b.h, 'ENERGY · suspend isn’t free — each wake is a 340 mW × 10 ms spike. It only pays off when events are RARE.', COL.amber);
-  const sA=socAvg('suspend'), iA=socAvg('idle'), be=breakevenGap();
-  const suspendWins = state.g > be;   // events rarer than breakeven → suspend saves
-
-  // two avg-power bars
-  const PADL=x+16, barX=PADL+118, barW=300, sy=b.y+34;
-  const maxP=Math.max(sA,iA,cfg.pIdle*1.2);
-  function pbar(yy,label,val,c,winner){
-    X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left'; X.fillText(label, PADL, yy+11);
-    X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(barX, yy, barW, 16);
-    X.fillStyle=c; X.globalAlpha=.7; X.fillRect(barX+1, yy+1, (barW-2)*Math.min(1,val/maxP), 14); X.globalAlpha=1;
-    X.fillStyle=c; X.font='700 11px '+FONT; X.textAlign='left';
-    X.fillText(val.toFixed(1)+' mW'+(winner?'  ◄ lower':''), barX+barW+10, yy+12);
+  // ---- average-power line(s): the headline ----
+  function avgLine(p,c,lab,bold,dy){
+    const y=logPy(p); X.strokeStyle=c; X.globalAlpha=bold?1:0.4; X.lineWidth=bold?2:1;
+    X.setLineDash([6,4]); X.beginPath(); X.moveTo(plotL,y); X.lineTo(plotR,y); X.stroke();
+    X.setLineDash([]); X.globalAlpha=1;
+    X.fillStyle=c; X.font=(bold?'700 ':'')+'9px '+FONT; X.textAlign='left';
+    X.fillText(lab, plotL+4, y+dy);
   }
-  pbar(sy,    'SoC avg · SUSPEND', sA, state.mode==='suspend'?COL.red:'rgba(255,93,108,0.6)', !suspendWins?false:true);
-  pbar(sy+26, 'SoC avg · IDLE',    iA, state.mode==='idle'?COL.green:'rgba(70,224,138,0.6)', suspendWins?false:true);
+  // idle label above its line, suspend label below its own — they never collide
+  avgLine(cfg.pIdle, COL.amber, 'idle avg '+cfg.pIdle+' mW', !susp, -4);
+  avgLine(batchAvgMw(), COL.green, 'suspend avg '+batchAvgMw().toFixed(batchAvgMw()<1?2:1)+' mW', susp, 12);
+  // time axis caption
+  X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='center';
+  X.fillText('time →   (each fill/drain cycle = '+fmtUs(tBufUs())+',  shown at fixed width)', (plotL+plotR)/2, pwrBot+12);
 
-  // breakeven readout
-  const rx=x+w-312;
-  X.textAlign='left'; X.fillStyle=COL.dim; X.font='9px '+FONT;
-  X.fillText('BREAK-EVEN EVENT GAP', rx, b.y+30);
-  X.fillStyle=COL.amber; X.font='700 22px '+FONT;
-  X.fillText(fmtUs(be), rx, b.y+55);
-  X.fillStyle=COL.dim; X.font='9px '+FONT;
-  X.fillText('events @ '+fmtUs(state.g)+' → '+(suspendWins?'suspend saves':'idle is cheaper'), rx, b.y+72);
-  X.fillStyle = suspendWins?COL.green:COL.red; X.font='700 10px '+FONT;
-  X.fillText(suspendWins?'rare enough — suspend duty-cycle wins' : 'too frequent — idle wins on power AND latency', rx, b.y+88);
-  // LP M7 power chip
-  X.textAlign='left'; X.fillStyle=COL.dim; X.font='8.5px '+FONT;
-  X.fillText('LP M7: '+pLp().toFixed(0)+' mW (∝ beat rate)', PADL, b.y+b.h-8);
+  // ---- right column numbers ----
+  const tb=tBufUs(), duty=batchDuty();
+  X.textAlign='left';
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('AVG POWER ('+(susp?'suspend':'idle')+')', rx, b.y+26);
+  X.fillStyle=susp?COL.green:COL.amber; X.font='700 23px '+FONT; X.fillText(avgPower().toFixed(avgPower()<1?2:1)+' mW', rx, b.y+50);
+  X.fillStyle=COL.dim; X.font='8.5px '+FONT;
+  X.fillText('vs '+(susp?'idle '+cfg.pIdle+' mW':'suspend '+batchAvgMw().toFixed(1)+' mW'), rx, b.y+66);
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('MAX SUSPEND WINDOW', rx, b.y+92);
+  X.fillStyle=COL.cyan; X.font='700 16px '+FONT; X.fillText(susp?fmtUs(tb):'—', rx, b.y+112);
+  X.fillStyle=COL.dim; X.font='8.5px '+FONT; X.fillText('512 KB / 2 B / '+state.x+' µs', rx, b.y+126);
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('SUSPEND DUTY', rx, b.y+148);
+  X.fillStyle=COL.green; X.font='700 16px '+FONT;
+  X.fillText(susp?((duty*100<1?(duty*100).toFixed(2):(duty*100).toFixed(1))+'% awake'):'n/a', rx, b.y+168);
+  X.fillStyle=COL.amber; X.font='8.5px '+FONT;
+  X.fillText(susp?('⤷ latency ≤ '+fmtUs(tb)):'latency ≈ '+state.x+' µs (beat)', rx, b.y+186);
 }
 
 // ---- band 5: metrics + verdict ---------------------------------------------
@@ -698,8 +710,8 @@ function drawMeta(){
        susp?'invisible behind wall':'= your latency now'); cx+=cw+10;
   chip(cx,cy,cw,ch,'TCM SLEEP', fmtUs(tBufUs()).split(' ')[0], fmtUs(tBufUs()).split(' ')[1],
        COL.cyan, 'M7 buffers this long'); cx+=cw+10;
-  const sA=socAvg();
-  chip(cx,cy,cw,ch,'SoC AVG PWR', sA.toFixed(0), 'mW', COL.amber, 'at '+fmtUs(state.g)+' events');
+  const sA=avgPower();
+  chip(cx,cy,cw,ch,'SoC AVG PWR', sA.toFixed(sA<1?2:1), 'mW', susp?COL.green:COL.amber, susp?'TCM duty-cycle':'idle standby');
 
   // verdict banner
   const be=breakevenGap(), suspendWins=state.g>be;
@@ -727,6 +739,7 @@ function frame(now){
   let dt=(now-state.lastReal)/1000; state.lastReal=now;
   dt=Math.min(dt,0.05);
   if(state.playing){
+    state.scopeScroll += dt*0.16;               // duty-cycle scope scrolls (cycles/sec)
     if(state.dwell>0){ state.dwell-=dt; }       // frozen on a key instant (e.g. DELIVERED)
     else advance(dt*phaseSpeed());
     const ph = state.ev ? evPhase() : 'none';
@@ -739,8 +752,7 @@ function frame(now){
   X.fillStyle=COL.bg; X.fillRect(0,0,W,H);
   drawTopo();
   drawTimeline();
-  drawBacklog();
-  drawEnergy();
+  drawDutyScope();
   drawMeta();
   requestAnimationFrame(frame);
 }

@@ -204,8 +204,19 @@ casual, technical, direct. No corporate hedging, no marketing voice.
   - The "stays up vs re-pays" insight: the buffer fill is **one-time per wake-up**; the
     energy `socAvg` duty already → 1 when events are frequent (suspend ≈ always-on, no
     benefit), matching Kyle's "banging in/out of suspend can cost more."
-  - TODO (deferred): an animated duty-cycle *mechanic* (SoC suspends long → wakes 10 ms
-    to drain TCM → re-suspends). This round is numbers-only in band 3.
+  - **Duty-cycle scope** (`drawDutyScope`, band 3 now) — replaced BOTH the static TCM
+    numbers band and the energy bars with one animated scope (4 bands total, declutters).
+    Top lane: TCM occupancy sawtooth (fills suspended, drains at each wake). Bottom lane:
+    rest-of-SoC power on a **log axis** (0.01–1000 mW so the 0.05 floor / 14 idle / 340
+    wake-spike are all legible) + two dashed **average-power lines** (suspend `batchAvgMw`
+    vs idle `pIdle`). The eye-magnet is those two lines: at 20 µs they're far apart (0.70
+    vs 14 mW = big win); at 1 µs suspend rises to ~12.5 mW and nearly merges with idle =
+    no win. Scrolls via `state.scopeScroll`; time axis is **representative** (fixed 2.5
+    cycles shown, true `tBufUs` labelled) — same not-to-scale honesty as the latency bar.
+    Reason for this rework: motion draws the eye, and the only thing moving used to be the
+    always-identical wall; now the *variable* meat (TCM + power + average) is what moves.
+  - Still TODO: a per-event-driven duty-cycle (the scope is procedural, not wired to the
+    `state.ev` sim). Good enough for the lesson; revisit if Kyle wants them coupled.
 
 ---
 TTA
