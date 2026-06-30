@@ -176,11 +176,14 @@ const FONT = '"JetBrains Mono", ui-monospace, monospace';
 // something interesting appears it catches it on its NEXT beat and kicks a small
 // payload upstairs (doorbell → mailbox FIFO).
 //
-// The rest-of-SoC (where the outer-loop M7s live) responds in one of two states:
-//   SUSPEND → 10 ms wake WALL before the first instruction executes (PLL relock,
-//             voltage ramp, clock tree, cache/TCM restore, first word).
+// The rest-of-SoC (where the outer-loop M7s live) responds in one of two states.
+// NOTE: it's SUSPEND, not deep sleep — LPDDR is held in self-refresh so context is
+// RETAINED; the 10 ms is a resume (rails, PLLs, DDR self-refresh exit + retrain,
+// context restore), not a cold boot. Deep sleep would be a full reboot, far longer.
+//   SUSPEND → 10 ms resume WALL before the first instruction executes
+//             (PMIC rails → PLL relock → DDR self-refresh exit → context restore).
 //   IDLE    → clocked + retained, grabs the payload in ~cycle time (~0).
-// Either way: process the small payload, hold off a window, then sleep again.
+// Either way: process the small payload, hold off a window, then suspend again.
 //
 // End-to-end latency = capture(≤T_beat) + response(10 ms | ~0) + process(small).
 // In SUSPEND the 10 ms term buries T_beat (10 000× bigger). In IDLE, capture IS
@@ -190,15 +193,18 @@ const cfg = {
   wakeUs: 10000,        // SUSPEND wake to first-word = 10 ms
   idleRespUs: 0.02,     // IDLE response ≈ a couple of 800 MHz cycles
   processUs: 8,         // "process something small"
-  fifoDepth: 256,       // mailbox FIFO entries before overflow / data loss
+  fifoDepth: 256,       // (legacy) tiny IPC mailbox — superseded by the TCM model
+  tcmKB: 512,           // M7 tightly-coupled memory the M7 buffers samples into
+  sampleB: 2,           // bytes per keep-alive sample (12/16-bit ADC → 2 B)
   lpMHz: 800,
-  // wake-sequence phases (fractions of wakeUs) — what the 10 ms is actually spent on
+  // suspend-RESUME phases (fractions of wakeUs) — where the 10 ms actually goes
+  // (LPDDR self-refresh resume, not a reboot): rails → PLLs → DDR exit → restore.
   phases: [
-    {name:'PLL relock', f:0.30, c:COL.amber},
-    {name:'V-rail ramp', f:0.22, c:'#ff9a3e'},
-    {name:'clock tree',  f:0.16, c:COL.amber},
-    {name:'cache/TCM',   f:0.24, c:'#ff7e4e'},
-    {name:'first word',  f:0.08, c:COL.green}
+    {name:'PMIC rails',     f:0.18, c:'#ff9a3e'},
+    {name:'PLL relock',     f:0.20, c:COL.amber},
+    {name:'DDR self-refresh',f:0.32, c:'#ff7e4e'},
+    {name:'context restore',f:0.22, c:COL.amber},
+    {name:'first word',     f:0.08, c:COL.green}
   ],
   // power model (mW) — rest-of-SoC + LP M7
   pSuspend: 0.05,       // rest-of-SoC suspended (retention only)
@@ -316,10 +322,16 @@ function breakevenGap(){
   return cfg.pActive*cfg.wakeUs/(cfg.pIdle-cfg.pSuspend);
 }
 function fmtUs(v){
+  if(v>=1e6)  return (v/1e6).toFixed(v>=1e7?0:1)+' s';
   if(v>=1000) return (v/1000).toFixed(v>=10000?1:2)+' ms';
   if(v>=1)    return v.toFixed(v<10?1:0)+' µs';
   return (v*1000).toFixed(0)+' ns';
 }
+// ---- M7 TCM buffering → suspend duty-cycle (the power-saving strategy) -------
+function tcmSamples(){ return cfg.tcmKB*1024/cfg.sampleB; }   // samples that fit
+function tBufUs(){ return tcmSamples()*state.x; }             // max suspend window, µs
+function batchDuty(){ return cfg.wakeUs/(tBufUs()+cfg.wakeUs); } // fraction awake (wake dominates drain)
+function batchAvgMw(){ const d=batchDuty(); return cfg.pActive*d + cfg.pSuspend*(1-d); }
 
 // ===========================================================================
 //  RENDER
@@ -410,7 +422,7 @@ function drawTopo(){
   if(state.mode==='suspend'){
     if(ph==='waking'){ soc=COL.amber; glow=0.16; lab='WAKING…'; note='climbing the 10 ms wall'; }
     else if(ph==='process'||ph==='holdoff'){ soc=COL.violet; glow=0.16; lab='ACTIVE'; note='outer M7 running'; }
-    else { soc=COL.red; glow=0.04; lab='SUSPENDED'; note='Zzz · 10 ms to first word'; }
+    else { soc=COL.red; glow=0.04; lab='SUSPENDED'; note='LPDDR self-refresh · 10 ms resume'; }
   } else {
     if(ph==='process'||ph==='holdoff'){ soc=COL.violet; glow=0.16; lab='ACTIVE'; note='outer M7 running'; }
     else { soc=COL.green; glow=0.10; lab='IDLE · READY'; note='clocked · grabs in ~1 cycle'; }
@@ -514,7 +526,7 @@ function drawTimeline(){
         X.fillText(p.name, pcx+pw/2, barY+barH/2+3); }
       pcx+=pw;
     });
-    drawBreak((xc1+xw1)/2, barY, barH);
+    drawBreak(xc1+(xw1-xc1)*0.70, barY, barH);   // on the DDR|restore seam, not over a label
     X.fillStyle=COL.amber; X.font='700 10px '+FONT; X.textAlign='center';
     X.fillText('◄ 10 ms WAKE WALL · compressed ►', (xc1+xw1)/2, barY-6);
   } else {
@@ -582,56 +594,49 @@ function drawTimeline(){
   X.textAlign='left';
 }
 
-// ---- band 3: beat comb + FIFO backlog (real beat spacing) ------------------
+// ---- band 3: M7 TCM buffering → suspend duty-cycle (latency-for-power) ------
 function drawBacklog(){
   const b=bands.back, x=10, w=W-20;
-  panel(x, b.y, w, b.h, 'MAILBOX FIFO · while the SoC wakes, the LP M7 keeps beating — samples pile up behind the wall', COL.cyan);
-  const peak=beatsDuringWake(), now=fifoNow();
-  const PADL=x+18, PADR=x+w-260, barY=b.y+34, barH=20;
+  panel(x, b.y, w, b.h, 'M7 TCM BUFFER · 512 KB · the M7 hoards keep-alive samples here so the SoC can stay SUSPENDED and wake only to drain — batching trades latency for power', COL.cyan);
+  const PADL=x+18, rx=x+w-256;
+  const tb=tBufUs(), duty=batchDuty(), avg=batchAvgMw();
+  const SP=sx=>PADL+(x+w-276-PADL)*sx;     // helper: fraction → x across the left strip
+  const stripR = x+w-276;
 
-  // beat comb across the wake window (capped count so 1 µs doesn't smear)
+  // duty-cycle mini-strip (NOT to scale — the wake is ~hundreds× shorter than the sleep)
+  const sy=b.y+32, sh=18;
+  X.fillStyle='rgba(70,224,138,0.20)'; X.fillRect(SP(0),sy,(stripR-PADL)*0.84,sh);
+  X.strokeStyle=COL.green; X.lineWidth=1; X.strokeRect(SP(0),sy,(stripR-PADL)*0.84,sh);
+  X.fillStyle=COL.green; X.font='700 9px '+FONT; X.textAlign='center';
+  X.fillText('SUSPENDED — M7 fills TCM', SP(0)+(stripR-PADL)*0.42, sy+12);
+  const wx=SP(0)+(stripR-PADL)*0.84;
+  X.fillStyle=COL.red; X.fillRect(wx,sy,(stripR-PADL)*0.06,sh);
+  X.fillStyle='rgba(199,125,255,0.45)'; X.fillRect(wx+(stripR-PADL)*0.06,sy,(stripR-PADL)*0.10,sh);
+  X.fillStyle=COL.red;   X.font='700 8px '+FONT; X.fillText('wake', wx+(stripR-PADL)*0.03, sy-4);
+  X.fillStyle=COL.violet;X.fillText('drain', wx+(stripR-PADL)*0.11, sy+12);
+  X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='left';
+  X.fillText('one duty cycle (widths not to scale) — repeats forever', PADL, sy+sh+12);
+
+  // TCM fill bar — the M7 wakes the SoC as the TCM nears full
+  const fy=sy+42;
   X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left';
-  X.fillText('LP M7 beats during the response window →', PADL, barY-6);
-  const drawN=Math.min(peak, 220);
-  for(let i=0;i<drawN;i++){
-    const xx=PADL+(i/Math.max(1,drawN-1))*(PADR-PADL-4);
-    const landed = i < now;
-    X.strokeStyle = landed ? COL.cyan : 'rgba(53,208,255,0.18)';
-    X.lineWidth=1; X.beginPath(); X.moveTo(xx,barY); X.lineTo(xx,barY+barH); X.stroke();
-  }
-  if(peak>220){ X.fillStyle=COL.dim; X.font='8px '+FONT; X.textAlign='right';
-    X.fillText('(comb capped — '+peak+' beats total)', PADR-2, barY+barH+12); }
+  X.fillText('TCM occupancy', PADL, fy-5);
+  X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(PADL, fy, stripR-PADL, 16);
+  X.fillStyle=COL.cyan; X.globalAlpha=.55; X.fillRect(PADL+1, fy+1, (stripR-PADL-2)*0.9, 14); X.globalAlpha=1;
+  X.fillStyle=COL.cyan; X.font='8px '+FONT; X.textAlign='right'; X.fillText('512 KB → wake to drain', stripR-4, fy+12);
 
-  // FIFO depth bar
-  const fy=barY+44;
-  X.fillStyle=COL.dim; X.font='9px '+FONT; X.textAlign='left';
-  X.fillText('FIFO depth', PADL, fy-5);
-  X.strokeStyle=COL.line; X.lineWidth=1; X.strokeRect(PADL, fy, PADR-PADL, 18);
-  const fillFrac=Math.min(1, now/cfg.fifoDepth);
-  const over = peak>cfg.fifoDepth;
-  X.fillStyle = over ? COL.red : COL.cyan; X.globalAlpha=.7;
-  X.fillRect(PADL+1, fy+1, (PADR-PADL-2)*fillFrac, 16); X.globalAlpha=1;
-  // capacity tick
-  X.strokeStyle=COL.amber; X.setLineDash([3,3]); X.lineWidth=1;
-  X.beginPath(); X.moveTo(PADR, fy-3); X.lineTo(PADR, fy+21); X.stroke(); X.setLineDash([]);
-  X.fillStyle=COL.amber; X.font='8px '+FONT; X.textAlign='left';
-  X.fillText('cap '+cfg.fifoDepth, PADR+3, fy+13);
-
-  // readout on the right
-  const rx=x+w-238;
+  // readouts (right)
+  const payoff = tb > 20*cfg.wakeUs;
   X.textAlign='left';
-  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('BEATS DURING WAKE', rx, b.y+30);
-  X.fillStyle = over?COL.red:COL.cyan; X.font='700 26px '+FONT;
-  X.fillText(peak.toLocaleString(), rx, b.y+58);
-  X.fillStyle=COL.dim; X.font='9px '+FONT;
-  X.fillText('= '+fmtUs(state.ev?state.ev.resp:respUs())+' / '+state.x+' µs beat', rx, b.y+74);
-  if(over){
-    X.fillStyle=COL.red; X.font='700 11px '+FONT;
-    X.fillText('⚠ OVERFLOW — '+(peak-cfg.fifoDepth).toLocaleString()+' samples dropped', rx, b.y+96);
-  } else {
-    X.fillStyle=COL.green; X.font='10px '+FONT;
-    X.fillText('✓ fits the '+cfg.fifoDepth+'-deep FIFO', rx, b.y+96);
-  }
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('MAX SUSPEND WINDOW', rx, b.y+24);
+  X.fillStyle=COL.green; X.font='700 24px '+FONT; X.fillText(fmtUs(tb), rx, b.y+50);
+  X.fillStyle=COL.dim; X.font='8.5px '+FONT;
+  X.fillText('512 KB / 2 B / '+state.x+' µs beat', rx, b.y+66);
+  X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText('SUSPEND DUTY', rx, b.y+84);
+  X.fillStyle=payoff?COL.green:COL.amber; X.font='700 13px '+FONT;
+  X.fillText((duty*100<1?(duty*100).toFixed(2):(duty*100).toFixed(1))+'% awake → '+avg.toFixed(1)+' mW', rx+78, b.y+85);
+  X.fillStyle=COL.amber; X.font='8.5px '+FONT;
+  X.fillText('⤷ latency cost: data waits up to '+fmtUs(tb), rx, b.y+102);
 }
 
 // ---- band 4: energy --------------------------------------------------------
@@ -663,7 +668,7 @@ function drawEnergy(){
   X.fillStyle=COL.dim; X.font='9px '+FONT;
   X.fillText('events @ '+fmtUs(state.g)+' → '+(suspendWins?'suspend saves':'idle is cheaper'), rx, b.y+72);
   X.fillStyle = suspendWins?COL.green:COL.red; X.font='700 10px '+FONT;
-  X.fillText(suspendWins?'rare enough — deep sleep wins' : 'too frequent — idle wins on power AND latency', rx, b.y+88);
+  X.fillText(suspendWins?'rare enough — suspend duty-cycle wins' : 'too frequent — idle wins on power AND latency', rx, b.y+88);
   // LP M7 power chip
   X.textAlign='left'; X.fillStyle=COL.dim; X.font='8.5px '+FONT;
   X.fillText('LP M7: '+pLp().toFixed(0)+' mW (∝ beat rate)', PADL, b.y+b.h-8);
@@ -691,9 +696,8 @@ function drawMeta(){
        susp?COL.red:COL.green, 'capture+resp+process'); cx+=cw+10;
   chip(cx,cy,cw,ch,'BEAT RATE', '1:'+state.x, 'µs', COL.cyan,
        susp?'invisible behind wall':'= your latency now'); cx+=cw+10;
-  const peak=beatsDuringWake(), over=peak>cfg.fifoDepth;
-  chip(cx,cy,cw,ch,'WAKE BACKLOG', peak>=1000?(peak/1000).toFixed(1)+'k':String(peak), 'beats',
-       over?COL.red:COL.green, over?'FIFO overflows':'fits FIFO'); cx+=cw+10;
+  chip(cx,cy,cw,ch,'TCM SLEEP', fmtUs(tBufUs()).split(' ')[0], fmtUs(tBufUs()).split(' ')[1],
+       COL.cyan, 'M7 buffers this long'); cx+=cw+10;
   const sA=socAvg();
   chip(cx,cy,cw,ch,'SoC AVG PWR', sA.toFixed(0), 'mW', COL.amber, 'at '+fmtUs(state.g)+' events');
 
@@ -708,7 +712,7 @@ function drawMeta(){
     msg='SUSPEND — paying a 10 ms wake on EVERY event AND, below '+fmtUs(be)+' spacing, burning more power than idle. Worst of both: slow AND hungry.';
   } else {
     bc=COL.amber;
-    msg='SUSPEND — events are rare enough (> '+fmtUs(be)+') that deep sleep saves standby power. You trade 10 ms of latency for it. Beat rate is irrelevant here.';
+    msg='SUSPEND — events are rare enough (> '+fmtUs(be)+') that duty-cycling suspend saves standby power. You trade 10 ms of latency for it. Beat rate is irrelevant here.';
   }
   X.fillStyle = bc==COL.green?'rgba(70,224,138,0.10)':bc==COL.amber?'rgba(255,178,62,0.10)':'rgba(255,93,108,0.10)';
   X.strokeStyle=bc; X.lineWidth=1;

@@ -170,13 +170,13 @@ casual, technical, direct. No corporate hedging, no marketing voice.
 - Validated all of the above headlessly (Chrome `--virtual-time-budget`; glitch
   injected via a temp `setTimeout` in throwaway copies since `state` is closure-scoped).
 - **Wake-wall page** (`wake-wall.html`) — the low-power M7 beats every 1–100 µs and
-  kicks data upstairs; the rest-of-SoC answers in **SUSPEND** (10 ms wake WALL:
-  PLL→V-ramp→clk→cache→first-word) or **IDLE** (~cycle time). Three lessons: beat
+  kicks data upstairs; the rest-of-SoC answers in **SUSPEND** (10 ms resume WALL —
+  see model-corrections below for phases) or **IDLE** (~cycle time). Lessons: beat
   rate goes *invisible* behind the wall in suspend but *becomes* the whole latency
-  in idle; the mailbox FIFO backlog (`10000/X`) overflows at fast beats; and the
-  energy **break-even ~244 ms** below which suspend is slower AND hungrier than idle
-  (each wake = 340 mW × 10 ms spike). Five bands (floorplan / to-scale latency budget
-  with a crawling playhead + log compare / FIFO / energy / metrics). Same recipe +
+  in idle; the M7's 512 KB TCM sets the **suspend duty-cycle** (latency-for-power);
+  and the energy **break-even ~244 ms** below which suspend is slower AND hungrier
+  than idle (each wake = 340 mW × 10 ms spike). Five bands (floorplan / broken-axis
+  latency budget + log compare / TCM duty-cycle / energy / metrics). Same recipe +
   the file:// GIF recorder. Cross-linked from `index.html` and `dual-core.html`.
 - **Wake-wall legibility pass** — the honest paradox: at true scale the 10 ms wall is
   99.9% of the bar, so the ~8 µs of real work is *sub-pixel* (spatial flash) AND
@@ -188,6 +188,24 @@ casual, technical, direct. No corporate hedging, no marketing voice.
   **narration line** says which step you're in (with a live wall countdown).
   *Don't "fix" the not-to-scale bar — that NOT-to-scale-ness IS the fix* (same spirit
   as the sub-pixel ADC-LSB note above).
+- **Wake-wall model corrections** (with Kyle, the domain owner — honor these):
+  - It is **SUSPEND, not deep sleep**. Deep sleep = full cold boot, far longer than
+    10 ms. The 10 ms is a **suspend resume** with LPDDR held in **self-refresh** (context
+    RETAINED): PMIC rails → PLL relock → DDR self-refresh exit → context restore → first
+    word. `cfg.phases` reflects this. Only two states exist: suspend vs idle.
+  - The old "256-deep mailbox FIFO overflows at fast beats / drops 244" framing was
+    **wrong** and is gone. The M7 has a **512 KB TCM** (`cfg.tcmKB`/`cfg.sampleB`=2 B) it
+    buffers samples into, so it never drops them. Band 3 is now **TCM buffering →
+    suspend duty-cycle**: `tBufUs = (512 KB / 2 B) · T_beat` = max suspend window (5.2 s
+    @ 20 µs, 0.26 s @ 1 µs); `batchDuty = wake/(tBuf+wake)` → near-zero power BUT latency
+    = up to a whole buffer period. **Batching trades latency for power** — faster beat =
+    shorter window = higher duty (power → idle) but lower latency. That tradeoff is the
+    lesson, not overflow.
+  - The "stays up vs re-pays" insight: the buffer fill is **one-time per wake-up**; the
+    energy `socAvg` duty already → 1 when events are frequent (suspend ≈ always-on, no
+    benefit), matching Kyle's "banging in/out of suspend can cost more."
+  - TODO (deferred): an animated duty-cycle *mechanic* (SoC suspends long → wakes 10 ms
+    to drain TCM → re-suspends). This round is numbers-only in band 3.
 
 ---
 TTA
