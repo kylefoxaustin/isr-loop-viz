@@ -116,11 +116,13 @@
       </div>
 
       <div class="ctl">
-        <label>Slow-mo</label>
-        <div class="seg" id="speed" role="group" aria-label="Simulation speed">
-          <button data-speed="8000"  aria-pressed="false">0.4×</button>
-          <button data-speed="20000" aria-pressed="true">1×</button>
-          <button data-speed="60000" aria-pressed="false">3×</button>
+        <label>Slow-mo · ×slower</label>
+        <div class="seg" id="pace" role="group" aria-label="Playback slowdown — higher is slower">
+          <button data-pace="1"  aria-pressed="false">1×</button>
+          <button data-pace="2"  aria-pressed="false">2×</button>
+          <button data-pace="4"  aria-pressed="true">4×</button>
+          <button data-pace="8"  aria-pressed="false">8×</button>
+          <button data-pace="16" aria-pressed="false">16×</button>
         </div>
       </div>
 
@@ -205,8 +207,7 @@ const cfg = {
   pLpBase: 5,           // LP M7 floor
   pLpBeat: 40,          // LP M7 per-beat term: pLpBase + pLpBeat/T_beat (mW)
   visualGapUs: 1300,    // on-screen pause between demo events (pacing only)
-  pace: 2.0             // global playback-slowness: each phase plays pace× longer.
-                        // bump this up if the action is still too fast to follow.
+  baseSpeed: 20000      // virtual µs/s for skipped dead air; active phases use state.pace
 };
 
 const Q = new URLSearchParams(location.search);
@@ -215,7 +216,7 @@ const state = {
   x: +(Q.get('x')||20),          // T_beat, µs
   g: +(Q.get('g')||10000),       // modeled event gap, µs (energy only)
   hold: +(Q.get('h')||200),      // hold-off, µs
-  speed: +(Q.get('speed')||20000),
+  pace: +(Q.get('pace')||4),     // playback-slowness notch (1..16 ×); higher = slower
   playing: true,
   vtime: 0, lastReal: 0,
   ev: null,                      // current event lifecycle (see fireEvent)
@@ -279,14 +280,15 @@ function advance(dtv){
 // of real work (otherwise it's a sub-frame flash the eye can't catch).
 function phaseSpeed(){
   const ph = state.ev ? evPhase() : 'none';
-  // k = global pace (cfg.pace× slower than the first tuning) × the user slow-mo knob.
-  // Each active phase targets a fixed REAL playback time, so nothing is a flash.
-  const k = cfg.pace * (20000/state.speed);
-  if(ph==='blind')   return Math.max(0.5, state.x/(0.4*k));         // catch  ~0.4k s
+  // k = the slow-mo notch (1..16). Each active phase targets a fixed REAL playback
+  // time of (base · k) seconds, so the whole routine slows together — at 4× the wall
+  // takes ~2 s, the work ~2.2 s — slow enough to actually watch it happen.
+  const k = state.pace;
+  if(ph==='blind')   return Math.max(0.3, state.x/(0.4*k));         // catch  ~0.4k s
   if(ph==='grab')    return Math.max(0.02, cfg.idleRespUs/(0.3*k)); // grab   ~0.3k s
   if(ph==='process') return cfg.processUs/(0.55*k);                 // work   ~0.55k s
   if(ph==='waking')  return cfg.wakeUs/(0.5*k);                     // wall   ~0.5k s
-  return state.speed;                                              // dead air (skipped) / holdoff
+  return cfg.baseSpeed;                                            // dead air (skipped) / holdoff
 }
 
 // ===========================================================================
@@ -725,7 +727,7 @@ function frame(now){
     else advance(dt*phaseSpeed());
     const ph = state.ev ? evPhase() : 'none';
     if(ph!==state.lastPhase){
-      if(ph==='holdoff') state.dwell=0.8*cfg.pace*(20000/state.speed); // hold on ✓ DELIVERED
+      if(ph==='holdoff') state.dwell=0.4*state.pace; // hold on ✓ DELIVERED (scales with slow-mo)
       state.lastPhase=ph;
     }
   }
@@ -753,7 +755,7 @@ wireSeg('mode','mode', v=>{ state.mode=v; resetEvent(); status(); });
 wireSeg('beat','x', v=>{ state.x=+v; resetEvent(); status(); });
 wireSeg('rate','g', v=>{ state.g=+v; status(); });
 wireSeg('hold','h', v=>{ state.hold=+v; resetEvent(); });
-wireSeg('speed','speed', v=>{ state.speed=+v; });
+wireSeg('pace','pace', v=>{ state.pace=+v; });
 
 document.getElementById('play').addEventListener('click', e=>{
   state.playing=!state.playing; e.target.textContent = state.playing?'⏸ Pause':'▶ Play';
@@ -775,7 +777,7 @@ function syncSeg(id, attr, val){
   [...grp.querySelectorAll('button')].forEach(b=>b.setAttribute('aria-pressed', b.dataset[attr]==String(val)?'true':'false'));
 }
 syncSeg('mode','mode',state.mode); syncSeg('beat','x',state.x); syncSeg('rate','g',state.g);
-syncSeg('hold','h',state.hold); syncSeg('speed','speed',state.speed);
+syncSeg('hold','h',state.hold); syncSeg('pace','pace',state.pace);
 status();
 requestAnimationFrame(frame);
 
