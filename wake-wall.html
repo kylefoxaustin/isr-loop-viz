@@ -204,7 +204,9 @@ const cfg = {
   pActive: 340,         // rest-of-SoC active (waking + processing)
   pLpBase: 5,           // LP M7 floor
   pLpBeat: 40,          // LP M7 per-beat term: pLpBase + pLpBeat/T_beat (mW)
-  visualGapUs: 1300     // on-screen pause between demo events (pacing only)
+  visualGapUs: 1300,    // on-screen pause between demo events (pacing only)
+  pace: 2.0             // global playback-slowness: each phase plays pace× longer.
+                        // bump this up if the action is still too fast to follow.
 };
 
 const Q = new URLSearchParams(location.search);
@@ -277,10 +279,14 @@ function advance(dtv){
 // of real work (otherwise it's a sub-frame flash the eye can't catch).
 function phaseSpeed(){
   const ph = state.ev ? evPhase() : 'none';
-  if(ph==='blind')   return Math.min(state.speed, Math.max(2, state.x/0.4)); // catch over ~0.4s
-  if(ph==='grab')    return Math.max(0.05, cfg.idleRespUs/0.3);              // ~0.3s near-freeze
-  if(ph==='process') return cfg.processUs/0.55;                             // work over ~0.55s
-  return state.speed;                                                       // wall / holdoff / idle
+  // k = global pace (cfg.pace× slower than the first tuning) × the user slow-mo knob.
+  // Each active phase targets a fixed REAL playback time, so nothing is a flash.
+  const k = cfg.pace * (20000/state.speed);
+  if(ph==='blind')   return Math.max(0.5, state.x/(0.4*k));         // catch  ~0.4k s
+  if(ph==='grab')    return Math.max(0.02, cfg.idleRespUs/(0.3*k)); // grab   ~0.3k s
+  if(ph==='process') return cfg.processUs/(0.55*k);                 // work   ~0.55k s
+  if(ph==='waking')  return cfg.wakeUs/(0.5*k);                     // wall   ~0.5k s
+  return state.speed;                                              // dead air (skipped) / holdoff
 }
 
 // ===========================================================================
@@ -719,7 +725,7 @@ function frame(now){
     else advance(dt*phaseSpeed());
     const ph = state.ev ? evPhase() : 'none';
     if(ph!==state.lastPhase){
-      if(ph==='holdoff') state.dwell=0.8;       // hold on ✓ DELIVERED so it isn't a flash
+      if(ph==='holdoff') state.dwell=0.8*cfg.pace*(20000/state.speed); // hold on ✓ DELIVERED
       state.lastPhase=ph;
     }
   }
